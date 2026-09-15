@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+package-lock.json.bak
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Cloudflare / Wrangler
+.wrangler/
+.dev.vars
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build output
+dist/
+build/
+coverage/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Supabase local
+supabase/.temp/
