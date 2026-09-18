@@ -1,13 +1,18 @@
 // src/index.js
 import dns from 'dns';
 dns.setDefaultResultOrder('ipv4first');
-
+import { httpServerHandler } from 'cloudflare:node';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import config from './config/index.js';
 
-import { startEmailWorker } from './workers/emailWorker.js';
+// NOTE: startEmailWorker uses setInterval / Node timers which do not
+// behave reliably in Cloudflare Workers. Email sending should instead
+// be driven by a Cron Trigger reading from the notification_queue
+// table (see wrangler.toml [triggers]). Re-enable this import once
+// that pattern is in place.
+// import { startEmailWorker } from './workers/emailWorker.js';
 
 import authRoutes from './routes/auth.js';
 import memberRoutes from './routes/members.js';
@@ -21,13 +26,6 @@ import evidenceRoutes from './routes/evidence.js';
 
 import { authenticateToken, requireAuth } from './middleware/auth.js';
 import { errorHandler } from './middleware/error.js';
-
-// 🔧 DIAGNOSTIC (remove after debugging)
-console.log('🔧 Supabase config check:');
-console.log('   URL:', config.SUPABASE_URL);
-console.log('   ANON key length:', config.SUPABASE_ANON_KEY?.length || 0);
-console.log('   SERVICE key length:', config.SUPABASE_SERVICE_ROLE_KEY?.length || 0);
-console.log('   URL has https:', config.SUPABASE_URL?.startsWith('https://'));
 
 const app = express();
 
@@ -60,27 +58,10 @@ app.use('/api/evidence', authenticateToken, requireAuth, evidenceRoutes);
 
 app.use(errorHandler);
 
-export default {
-  async fetch(request, env, ctx) {
-    process.env = { ...process.env, ...env };
-    return app(request, env, ctx);
-  }
-};
+// Cloudflare Workers entry point. Workers' nodejs_compat layer detects
+// that `app` is an Express instance and adapts (Request, Env, Ctx) to
+// Express's (req, res, next) signature.
 
-if (config.isDevelopment || config.NODE_ENV === 'production') {
-  const PORT = config.PORT;
+app.listen(3000);
 
-  app.listen(PORT, () => {
-    console.log(`🚀 API running on http://localhost:${PORT}`);
-    console.log(`📝 Environment: ${config.NODE_ENV}`);
-    console.log(`🔑 JWT_SECRET: ${config.JWT_SECRET ? '✅ Set' : '❌ Missing'}`);
-    console.log(`🛢️  SUPABASE_URL: ${config.SUPABASE_URL ? '✅ Set' : '❌ Missing'}`);
-    console.log(`📧 RESEND_API_KEY: ${config.RESEND_API_KEY ? '✅ Set' : '❌ Missing'}`);
-
-    if (config.RESEND_API_KEY) {
-      startEmailWorker();
-    } else {
-      console.warn('⚠️ Email worker not started — RESEND_API_KEY is missing');
-    }
-  });
-}
+export default httpServerHandler({ port: 3000 });

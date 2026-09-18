@@ -1,14 +1,15 @@
 name = "sscmps-api"
 main = "src/index.js"
-compatibility_date = "2024-09-23"
-compatibility_flags = ["nodejs_compat"]
+compatibility_date = "2026-08-04"
+
+compatibility_flags = [
+  "nodejs_compat",
+  "enable_nodejs_http_server_modules"
+]
 
 [vars]
 NODE_ENV = "production"
-JWT_SECRET="gpozv7roMgECP59u5wx/5nuCjbnGcDYO/NQjXd7XSF0="
-SUPABASE_URL="https://gmsyymkjxepnqkcqeyhi.supabase.co"
-SUPABASE_SERVICE_ROLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdtc3l5bWtqeGVwbnFrY3FleWhpIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODkwMzcxMiwiZXhwIjoyMTA0NDc5NzEyfQ.nCA280m3h5hNDFBKrWetilEzYKJtoPk-UNxfty_NXVI"
-SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdtc3l5bWtqeGVwbnFrY3FleWhpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5MDM3MTIsImV4cCI6MjEwNDQ3OTcxMn0.DMeQrWtGwGTbY1qdBkc7_wP2E5uMiQORDPGPw6hY08U"
+
 [env.production]
 vars = { NODE_ENV = "production" }
 

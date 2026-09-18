@@ -57,5 +57,24 @@ export const requireTrustee = requireRole('Chairman', 'Secretary', 'Treasurer', 
 
 /**
  * Require Management Committee or SystemAdmin
+ * (strict — only the explicitly-tagged ManagementCommittee role)
  */
 export const requireManagementCommittee = requireRole('ManagementCommittee', 'SystemAdmin');
+
+/**
+ * Require admission / member-administration committee access.
+ *
+ * Bye-law Section 29 defines the Management Committee as the
+ * Chairman, Treasurer, and Secretary (ex officio). Section 10
+ * entrusts the disposal of admission applications to the
+ * Management Committee. Therefore the three officers plus any
+ * additionally-tagged ManagementCommittee members must have
+ * access to admission endpoints.
+ */
+export const requireAdmissionCommittee = requireRole(
+  'Chairman',
+  'Secretary',
+  'Treasurer',
+  'ManagementCommittee',
+  'SystemAdmin'
+);
