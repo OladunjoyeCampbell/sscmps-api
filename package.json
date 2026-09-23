@@ -4,6 +4,14 @@
   "type": "module",
   "description": "Express API for Niger State Polytechnic Cooperative Management System",
   "main": "src/index.js",
+  "author": "Niger State Polytechnic Senior Staff Cooperative and Multipurpose Society Limited",
+  "contributors": [
+    {
+      "name": "Dr Oladele Campbell",
+      "role": "Developer"
+    }
+  ],
+  "copyright": "© 2026 Niger State Polytechnic Senior Staff Cooperative and Multipurpose Society Limited",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
