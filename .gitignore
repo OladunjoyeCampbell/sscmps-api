@@ -28,3 +28,6 @@ Thumbs.db
 
 # Supabase local
 supabase/.temp/
+# Migration artifacts (contain real member data)
+migration-template.xlsx
+~$*.xlsx

@@ -54,6 +54,34 @@ async function notify(memberId, category, subject, body, payload) {
   }
 }
 
+/**
+ * Count accepted sureties for a loan.
+ * Returns { accepted, required, ready } where `ready` is true
+ * only when the count meets the product's requirement.
+ */
+async function checkSureties(loanId) {
+  const { data: loan } = await supabaseAdmin
+    .from('loans')
+    .select('loan_product_id, loan_products(number_of_sureties_required, requires_sureties)')
+    .eq('id', loanId)
+    .maybeSingle();
+
+  const requires = loan?.loan_products?.requires_sureties ?? true;
+  const required = loan?.loan_products?.number_of_sureties_required ?? 2;
+
+  if (!requires) {
+    return { accepted: 0, required: 0, ready: true };
+  }
+
+  const { data: sureties } = await supabaseAdmin
+    .from('sureties')
+    .select('status')
+    .eq('loan_id', loanId);
+
+  const accepted = (sureties || []).filter((s) => s.status === 'Accepted').length;
+  return { accepted, required, ready: accepted >= required };
+}
+
 // ---------------------------------------------------------------------
 // GET /api/loans/products
 // ---------------------------------------------------------------------
@@ -73,11 +101,11 @@ router.get('/products', asyncHandler(async (req, res) => {
 // ---------------------------------------------------------------------
 router.get('/calculate', asyncHandler(async (req, res) => {
   const memberId = getMemberId(req);
-  const { product_id, principal, term_months } = req.query;
+  const { product_id, principal } = req.query;
 
-  if (!product_id || !principal || !term_months) {
+  if (!product_id || !principal) {
     return res.status(400).json({
-      error: 'product_id, principal, term_months are required',
+      error: 'product_id and principal are required',
     });
   }
 
@@ -85,7 +113,6 @@ router.get('/calculate', asyncHandler(async (req, res) => {
     p_member_id: memberId,
     p_loan_product_id: product_id,
     p_principal: parseFloat(principal),
-    p_term_months: parseInt(term_months),
   });
 
   if (!result.data) {
@@ -100,13 +127,11 @@ router.get('/calculate', asyncHandler(async (req, res) => {
 // ---------------------------------------------------------------------
 router.post('/apply', asyncHandler(async (req, res) => {
   const memberId = getMemberId(req);
-  const {
-    loan_product_id, principal, term_months, purpose, application_notes,
-  } = req.body;
+  const { loan_product_id, principal, purpose, application_notes } = req.body;
 
-  if (!loan_product_id || !principal || !term_months) {
+  if (!loan_product_id || !principal) {
     return res.status(400).json({
-      error: 'loan_product_id, principal, term_months are required',
+      error: 'loan_product_id and principal are required',
     });
   }
 
@@ -118,7 +143,6 @@ router.post('/apply', asyncHandler(async (req, res) => {
     p_member_id: memberId,
     p_loan_product_id: loan_product_id,
     p_principal: parseFloat(principal),
-    p_term_months: parseInt(term_months),
     p_purpose: purpose || null,
     p_application_notes: application_notes || null,
   });
@@ -168,7 +192,7 @@ router.get('/pending', asyncHandler(async (req, res) => {
       .select('id, staff_id, first_name, last_name, email')
       .in('id', memberIds),
     supabaseAdmin.from('loan_products')
-      .select('id, name')
+      .select('id, name, number_of_sureties_required, requires_sureties')
       .in('id', productIds),
     supabaseAdmin.from('sureties')
       .select('id, loan_id, surety_member_id, status, consent_given_at')
@@ -183,25 +207,32 @@ router.get('/pending', asyncHandler(async (req, res) => {
     .select('id, staff_id, first_name, last_name')
     .in('id', suretyMemberIds);
 
-  const enriched = loans.map((loan) => ({
-    ...loan,
-    member: membersRes.data?.find((m) => m.id === loan.member_id) || null,
-    product: productsRes.data?.find((p) => p.id === loan.loan_product_id) || null,
-    sureties: (suretiesRes.data || [])
+  const enriched = loans.map((loan) => {
+    const product = productsRes.data?.find((p) => p.id === loan.loan_product_id) || null;
+    const sureties = (suretiesRes.data || [])
       .filter((s) => s.loan_id === loan.id)
       .map((s) => ({
         ...s,
         member: suretyMembers?.find((m) => m.id === s.surety_member_id) || null,
-      })),
-  }));
+      }));
+    const acceptedSureties = sureties.filter((s) => s.status === 'Accepted').length;
+    const requiredSureties = product?.number_of_sureties_required ?? 2;
+    return {
+      ...loan,
+      member: membersRes.data?.find((m) => m.id === loan.member_id) || null,
+      product,
+      sureties,
+      accepted_sureties: acceptedSureties,
+      required_sureties: requiredSureties,
+      sureties_ready: !product?.requires_sureties || acceptedSureties >= requiredSureties,
+    };
+  });
 
   res.json({ success: true, loans: enriched });
 }));
 
 // ---------------------------------------------------------------------
 // GET /api/loans/committee-members
-// Returns the list of members eligible to sit on the Loan Committee
-// (used to populate the attendance checklist on the decision form).
 // ---------------------------------------------------------------------
 router.get('/committee-members', requireLoanCommitteeChairman, asyncHandler(async (req, res) => {
   const { data, error } = await supabaseAdmin
@@ -214,10 +245,9 @@ router.get('/committee-members', requireLoanCommitteeChairman, asyncHandler(asyn
   if (error) return res.status(400).json({ error: error.message });
   res.json({ success: true, members: data || [] });
 }));
+
 // ---------------------------------------------------------------------
 // GET /api/loans/awaiting-signoff
-// Approved loans with fewer than 2 trustee signatures.
-// Visible to trustees (Chairman, Secretary, Treasurer).
 // ---------------------------------------------------------------------
 router.get('/awaiting-signoff', asyncHandler(async (req, res) => {
   const role = getMemberRole(req);
@@ -243,7 +273,6 @@ router.get('/awaiting-signoff', asyncHandler(async (req, res) => {
     return count < 2;
   });
 
-  // Enrich with borrower names
   const memberIds = [...new Set(filtered.map((l) => l.member_id))];
   const { data: borrowers } = memberIds.length
     ? await supabaseAdmin.from('members')
@@ -266,7 +295,6 @@ router.get('/awaiting-signoff', asyncHandler(async (req, res) => {
 
 // ---------------------------------------------------------------------
 // GET /api/loans/ready-to-disburse
-// Approved loans with both trustee signatures — awaiting Treasurer.
 // ---------------------------------------------------------------------
 router.get('/ready-to-disburse', asyncHandler(async (req, res) => {
   const role = getMemberRole(req);
@@ -304,7 +332,6 @@ router.get('/ready-to-disburse', asyncHandler(async (req, res) => {
 
   res.json({ success: true, loans: enriched });
 }));
-
 
 // ---------------------------------------------------------------------
 // GET /api/loans/my  (Member's own loans)
@@ -359,8 +386,6 @@ router.get('/all', requireTreasurer, asyncHandler(async (req, res) => {
 // GET /api/loans/:loanId  (Full detail — owner or management)
 // MUST come after all specific /all, /my, /pending, /products etc.
 // ---------------------------------------------------------------------
-
-
 router.get('/:loanId', asyncHandler(async (req, res) => {
   const callerId = getMemberId(req);
   const callerRole = getMemberRole(req);
@@ -380,7 +405,8 @@ router.get('/:loanId', asyncHandler(async (req, res) => {
       trustee_signoff_1_at, trustee_signoff_2_at,
       override_credit_limit, override_reason,
       closed_at, closed_reason, created_at, updated_at,
-      loan_products(id, name, normal_interest_rate, surplus_interest_rate)
+      loan_products(id, name, normal_interest_rate, surplus_interest_rate,
+                    requires_sureties, number_of_sureties_required)
     `)
     .eq('id', loanId)
     .single();
@@ -452,18 +478,28 @@ router.get('/:loanId', asyncHandler(async (req, res) => {
   const hasSignedOff = callerId === loan.trustee_signoff_1
     || callerId === loan.trustee_signoff_2;
 
+  // NEW: surety readiness (Bye-law §49)
+  const requiresSureties = loan.loan_products?.requires_sureties ?? true;
+  const requiredSureties = loan.loan_products?.number_of_sureties_required ?? 2;
+  const acceptedSureties = sureties.filter((s) => s.status === 'Accepted').length;
+  const suretiesReady = !requiresSureties || acceptedSureties >= requiredSureties;
+
+  // Permissions now factor in surety readiness
   const canDecide =
     loan.status === 'Pending'
+    && suretiesReady
     && (callerRole === 'LoanCommitteeChairman' || callerRole === 'SystemAdmin');
 
   const canSignoff =
     loan.status === 'Approved'
+    && suretiesReady
     && ['Chairman', 'Secretary', 'Treasurer', 'SystemAdmin'].includes(callerRole)
     && !hasSignedOff
     && signoffCount < 2;
 
   const canDisburse =
     loan.status === 'Approved'
+    && suretiesReady
     && signoffCount >= 2
     && (callerRole === 'Treasurer' || callerRole === 'SystemAdmin');
 
@@ -479,6 +515,9 @@ router.get('/:loanId', asyncHandler(async (req, res) => {
       signoff_1: signoff1,
       signoff_2: signoff2,
       signoff_count: signoffCount,
+      accepted_sureties: acceptedSureties,
+      required_sureties: requiredSureties,
+      sureties_ready: suretiesReady,
     },
     schedule: scheduleRes.data || [],
     permissions: { canDecide, canSignoff, canDisburse },
@@ -568,7 +607,8 @@ router.post('/decline', requireLoanCommitteeChairman, asyncHandler(async (req, r
 
 // ---------------------------------------------------------------------
 // POST /api/loans/committee-decision
-// Replaces the old /approve route with full committee-decision recording.
+// Records the Loan Committee's decision with quorum, rate cap, term cap.
+// Bye-law §49: both sureties must accept before the committee can decide.
 // ---------------------------------------------------------------------
 router.post('/committee-decision', requireLoanCommitteeChairman, asyncHandler(async (req, res) => {
   const memberId = getMemberId(req);
@@ -585,6 +625,15 @@ router.post('/committee-decision', requireLoanCommitteeChairman, asyncHandler(as
 
   if (!loan_id) return res.status(400).json({ error: 'loan_id is required' });
 
+  // NEW: require both sureties accepted before the committee can decide
+  const { accepted, required, ready } = await checkSureties(loan_id);
+  if (!ready) {
+    return res.status(400).json({
+      error: `Both sureties must accept before the committee can decide (Bye-law §49). Currently ${accepted} of ${required} accepted.`,
+      code: 'SURETIES_NOT_ACCEPTED',
+    });
+  }
+
   if (!['Approved', 'Rejected', 'Deferred'].includes(decision)) {
     return res.status(400).json({
       error: 'decision must be Approved, Rejected, or Deferred',
@@ -598,13 +647,13 @@ router.post('/committee-decision', requireLoanCommitteeChairman, asyncHandler(as
     });
   }
 
-  const result = await supabaseAdmin.rpc('record_committee_decision', {
+    const result = await supabaseAdmin.rpc('record_committee_decision', {
     p_loan_id: loan_id,
     p_recorded_by: memberId,
     p_decision: decision,
     p_amount_approved: amount_approved ?? null,
     p_interest_rate: interest_rate ?? null,
-    p_repayment_months: repayment_months ?? null,
+    p_repayment_months: null,   // derived server-side
     p_committee_members_present: committee_members_present,
     p_decision_reason: decision_reason || null,
     p_notes: notes || null,
@@ -617,7 +666,6 @@ router.post('/committee-decision', requireLoanCommitteeChairman, asyncHandler(as
     });
   }
 
-  // Look up borrower for notification
   const { data: loan } = await supabaseAdmin
     .from('loans')
     .select('member_id, loan_reference')
@@ -656,13 +704,22 @@ router.post('/committee-decision', requireLoanCommitteeChairman, asyncHandler(as
 
 // ---------------------------------------------------------------------
 // POST /api/loans/signoff
-// Records one trustee sign-off. Slot is derived server-side.
+// Bye-law §49: sureties must still be accepted (defence in depth).
 // ---------------------------------------------------------------------
 router.post('/signoff', requireTrustee, asyncHandler(async (req, res) => {
   const memberId = getMemberId(req);
   const { loan_id } = req.body;
 
   if (!loan_id) return res.status(400).json({ error: 'loan_id is required' });
+
+  // NEW: defence in depth — sureties must still be in place
+  const { accepted, required, ready } = await checkSureties(loan_id);
+  if (!ready) {
+    return res.status(400).json({
+      error: `Both sureties must accept before trustee sign-off (Bye-law §49). Currently ${accepted} of ${required} accepted.`,
+      code: 'SURETIES_NOT_ACCEPTED',
+    });
+  }
 
   const result = await supabaseAdmin.rpc('record_loan_trustee_signoff', {
     p_loan_id: loan_id,
@@ -724,7 +781,6 @@ router.post('/disburse', requireTreasurer, asyncHandler(async (req, res) => {
 
   if (!loan_id) return res.status(400).json({ error: 'loan_id is required' });
 
-  // Pre-flight checks (defence in depth — the RPC should also validate)
   const { data: loan, error: fetchError } = await supabaseAdmin
     .from('loans')
     .select('id, status, trustee_signoff_1, trustee_signoff_2, member_id, loan_reference')
@@ -745,7 +801,15 @@ router.post('/disburse', requireTreasurer, asyncHandler(async (req, res) => {
     });
   }
 
-  // Check committee decision exists
+  // Defence in depth: sureties must still be accepted
+  const { accepted, required, ready } = await checkSureties(loan_id);
+  if (!ready) {
+    return res.status(400).json({
+      error: `Both sureties must accept before disbursement (Bye-law §49). Currently ${accepted} of ${required} accepted.`,
+      code: 'SURETIES_NOT_ACCEPTED',
+    });
+  }
+
   const { data: decision } = await supabaseAdmin
     .from('loan_committee_decisions')
     .select('id, decision')
@@ -758,11 +822,6 @@ router.post('/disburse', requireTreasurer, asyncHandler(async (req, res) => {
       error: 'No approved committee decision found for this loan',
     });
   }
-
-  // FR-5.2: Treasurer cannot be the sole actor. Since two distinct
-  // trustees must have signed, and only 3 trustees exist, if the Treasurer
-  // is one signatory then a non-Treasurer also signed. Both slots being
-  // filled satisfies this requirement automatically.
 
   const result = await supabaseAdmin.rpc('disburse_loan', {
     p_loan_id: loan_id,
