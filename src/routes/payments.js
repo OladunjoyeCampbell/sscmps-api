@@ -19,7 +19,7 @@ router.post(
     const memberId = getMemberId(req);
     const {
       amount,
-      payment_reference,   // optional override — usually null
+      payment_reference, // optional override — usually null
       evidence_url,
       proposed_savings,
       proposed_loans,
@@ -39,8 +39,12 @@ router.post(
     });
 
     if (result.error) {
+      console.error('[payments.submit] RPC error:', result.error);
       return res.status(400).json({
         error: result.error.message || 'Failed to submit payment',
+        details: result.error.details || null,
+        hint: result.error.hint || null,
+        code: result.error.code || null,
       });
     }
     if (!result.data) {
@@ -85,6 +89,10 @@ router.get(
 /**
  * POST /api/payments/approve
  * Approve a payment with split allocation — Treasurer only.
+ *
+ * Surfaces RPC errors so failures aren't masked as a generic 400.
+ * Previously, a check-constraint violation inside the RPC produced
+ * only "Failed to approve payment" without any hint of the cause.
  */
 router.post(
   '/approve',
@@ -115,13 +123,28 @@ router.post(
       p_match_override_member_id: match_override_member_id || null,
     });
 
-    if (!result.data) {
-      return res.status(400).json({ error: 'Failed to approve payment' });
+    // Surface the real Postgres / RPC error
+    if (result.error) {
+      console.error('[payments.approve] RPC error:', result.error);
+      return res.status(400).json({
+        error: result.error.message || 'Payment approval failed',
+        details: result.error.details || null,
+        hint: result.error.hint || null,
+        code: result.error.code || null,
+      });
     }
+
+    if (!result.data) {
+      return res.status(400).json({
+        error: 'RPC returned no data',
+      });
+    }
+
     if (!result.data.success) {
-      return res
-        .status(400)
-        .json({ error: result.data.error || 'Payment approval failed' });
+      return res.status(400).json({
+        error: result.data.error || 'Payment approval failed',
+        result: result.data,
+      });
     }
 
     res.json({ success: true, result: result.data });
@@ -153,7 +176,13 @@ router.post(
     });
 
     if (result.error) {
-      return res.status(400).json({ error: result.error.message });
+      console.error('[payments.decline] RPC error:', result.error);
+      return res.status(400).json({
+        error: result.error.message || 'Payment decline failed',
+        details: result.error.details || null,
+        hint: result.error.hint || null,
+        code: result.error.code || null,
+      });
     }
 
     res.json({ success: true, message: 'Payment declined' });
