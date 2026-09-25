@@ -6,7 +6,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import config from './config/index.js';
-
+import { processNotificationQueue } from './workers/notificationProcessor.js';
 // NOTE: startEmailWorker uses setInterval / Node timers which do not
 // behave reliably in Cloudflare Workers. Email sending should instead
 // be driven by a Cron Trigger reading from the notification_queue
@@ -56,12 +56,23 @@ app.use('/api/withdrawals', authenticateToken, requireAuth, withdrawalRoutes);
 app.use('/api/admin', authenticateToken, requireAuth, adminRoutes);
 app.use('/api/evidence', authenticateToken, requireAuth, evidenceRoutes);
 
-app.use(errorHandler);
 
-// Cloudflare Workers entry point. Workers' nodejs_compat layer detects
-// that `app` is an Express instance and adapts (Request, Env, Ctx) to
-// Express's (req, res, next) signature.
+
+app.use(errorHandler);
 
 app.listen(3000);
 
-export default httpServerHandler({ port: 3000 });
+const serverHandler = httpServerHandler({ port: 3000 });
+
+export default {
+  fetch: (request, env, ctx) => serverHandler.fetch(request, env, ctx),
+  async scheduled(event, env, ctx) {
+    console.log('[cron] notification processor starting');
+    try {
+      const summary = await processNotificationQueue();
+      console.log('[cron] result:', JSON.stringify(summary));
+    } catch (err) {
+      console.error('[cron] failed:', err.message);
+    }
+  },
+};

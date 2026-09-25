@@ -10,8 +10,14 @@ compatibility_flags = [
 [vars]
 NODE_ENV = "production"
 
+[triggers]
+crons = ["*/5 * * * *"]
+
 [env.production]
 vars = { NODE_ENV = "production" }
 
 [env.development]
 vars = { NODE_ENV = "development" }
+
+
+
