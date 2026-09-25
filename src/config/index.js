@@ -7,7 +7,7 @@ dotenv.config();
 const processEnv = process.env || {};
 
 // Validate required environment variables
-const required = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ANON_KEY'];
+const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ANON_KEY'];
 const missing = required.filter(key => !processEnv[key]);
 
 if (missing.length > 0) {
@@ -26,7 +26,6 @@ const isCloudflare = typeof process === 'undefined' || typeof processEnv === 'un
 export default {
   NODE_ENV: processEnv.NODE_ENV || 'development',
   PORT: parseInt(processEnv.PORT || '3000', 10),
-  JWT_SECRET: processEnv.JWT_SECRET || '',
   SUPABASE_URL: processEnv.SUPABASE_URL || '',
   SUPABASE_SERVICE_ROLE_KEY: processEnv.SUPABASE_SERVICE_ROLE_KEY || '',
   SUPABASE_ANON_KEY: processEnv.SUPABASE_ANON_KEY || '',
