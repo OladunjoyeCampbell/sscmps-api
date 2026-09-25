@@ -106,16 +106,42 @@ router.post('/login', asyncHandler(async (req, res) => {
     email: normalizedEmail, password,
   });
 
-  if (authError) {
-    try {
-      await supabaseAdmin.rpc('record_login_attempt', {
-        p_email: normalizedEmail, p_ip: clientIp,
-      });
-    } catch (err) {
-      console.warn('[auth] failed to record login attempt:', err.message);
-    }
-    return res.status(401).json({ error: 'Invalid credentials' });
+if (authError) {
+  const threshold = 5;
+  let attempts = 0;
+
+  // Record this failed attempt
+  try {
+    await supabaseAdmin.rpc('record_login_attempt', {
+      p_email: normalizedEmail,
+      p_ip: clientIp,
+    });
+  } catch (err) {
+    console.warn('[auth] failed to record login attempt:', err.message);
   }
+
+  // Read back the current failure count
+  try {
+    const { data: state } = await supabaseAdmin.rpc('check_login_lockout', {
+      p_email: normalizedEmail,
+      p_window_minutes: 15,
+      p_threshold: threshold,
+    });
+    if (state) attempts = state.attempts ?? 0;
+  } catch (err) {
+    console.warn('[auth] lockout re-check failed:', err.message);
+  }
+
+  const remaining = Math.max(0, threshold - attempts);
+
+  return res.status(401).json({
+    error: 'Invalid credentials',
+    attempts,
+    attempts_remaining: remaining,
+    lockout_threshold: threshold,
+    lockout_window_minutes: 15,
+  });
+}
 
   const { data: member, error: memberError } = await supabaseAdmin
     .from('members')
