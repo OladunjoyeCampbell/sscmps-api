@@ -182,7 +182,137 @@ if (authError) {
     },
   });
 }));
+/**
+ * POST /api/auth/forgot-password
+ * Initiates a password reset. Never reveals whether the email exists.
+ */
+router.post('/forgot-password', asyncHandler(async (req, res) => {
+  const { email } = req.body;
 
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+
+  // Always respond with the same message, regardless of whether the
+  // email exists. This prevents account enumeration.
+  const safeResponse = {
+    success: true,
+    message:
+      'If that email is registered, a password reset link has been sent. Please check your inbox and spam folder.',
+  };
+
+  // Silent lookup — do not leak the result
+  try {
+    const { data: member } = await supabaseAdmin
+      .from('members')
+      .select('id, status')
+      .eq('email', normalizedEmail)
+      .maybeSingle();
+
+    // Only trigger the reset for members in a state that should have
+    // access. Suspended/Terminated members silently get no email.
+    if (!member || ['Suspended', 'Terminated', 'Exited'].includes(member.status)) {
+      return res.json(safeResponse);
+    }
+
+    const redirectTo = `${process.env.APP_URL || 'https://sscmps.com.ng'}/reset-password`;
+
+    const { error: resetError } = await supabaseAdmin.auth.resetPasswordForEmail(
+      normalizedEmail,
+      { redirectTo }
+    );
+
+    if (resetError) {
+      console.error('[auth] resetPasswordForEmail failed:', resetError.message);
+      // Do not surface the error — same response either way
+    }
+
+    // Optional: queue an in-app notification so the member sees a
+    // record on their next login
+    try {
+      await supabaseAdmin.rpc('queue_notification', {
+        p_member_id: member.id,
+        p_category: 'SYSTEM',
+        p_subject: 'Password reset requested',
+        p_body:
+          'A password reset was requested for your account. If this was not you, please contact the Secretary immediately.',
+        p_payload: {},
+      });
+    } catch (err) {
+      console.warn('[auth] reset notification failed:', err.message);
+    }
+  } catch (err) {
+    console.error('[auth] forgot-password error:', err.message);
+    // Never surface — same response
+  }
+
+  return res.json(safeResponse);
+}));
+
+/**
+ * POST /api/auth/reset-password
+ * Verifies the reset token and updates the member's password.
+ * The frontend receives the token from the URL fragment after the
+ * user clicks the link in the reset email.
+ */
+router.post('/reset-password', asyncHandler(async (req, res) => {
+  const { access_token, new_password } = req.body;
+
+  if (!access_token || !new_password) {
+    return res.status(400).json({ error: 'access_token and new_password are required' });
+  }
+
+  // Basic password policy — enforce server-side, not just client-side
+  if (new_password.length < 8) {
+    return res.status(400).json({
+      error: 'Password must be at least 8 characters',
+      code: 'PASSWORD_TOO_SHORT',
+    });
+  }
+
+  // Verify the reset token by attempting to load the user
+  const {
+    data: { user },
+    error: verifyError,
+  } = await supabaseAdmin.auth.getUser(access_token);
+
+  if (verifyError || !user) {
+    return res.status(401).json({
+      error: 'This reset link is invalid or has expired. Please request a new one.',
+      code: 'INVALID_RESET_TOKEN',
+    });
+  }
+
+  // Update the password using the admin API
+  const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
+    user.id,
+    { password: new_password }
+  );
+
+  if (updateError) {
+    console.error('[auth] password update failed:', updateError.message);
+    return res.status(400).json({
+      error: updateError.message || 'Failed to update password',
+    });
+  }
+
+  // Clear any lingering login attempts for this account — the reset
+  // is proof the user owns the email, so the lockout should lift.
+  try {
+    await supabaseAdmin.rpc('clear_login_attempts', {
+      p_email: user.email.toLowerCase(),
+    });
+  } catch (err) {
+    console.warn('[auth] clear_login_attempts failed:', err.message);
+  }
+
+  return res.json({
+    success: true,
+    message: 'Password updated. You can now log in with your new password.',
+  });
+}));
 /**
  * POST /api/auth/refresh
  */
