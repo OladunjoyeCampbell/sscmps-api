@@ -59,31 +59,50 @@ export async function processNotificationQueue() {
   summary.processed = pending.length;
 
   for (const notification of pending) {
-    try {
-      let recipient = notification.recipient_email;
+  try {
+    // Resolve the recipient email
+    let recipient = notification.recipient_email;
 
-      if (!recipient && notification.recipient_member_id) {
-        const { data: member } = await supabaseAdmin
-          .from('members')
-          .select('email')
-          .eq('id', notification.recipient_member_id)
-          .single();
-        recipient = member?.email || null;
-      }
+    if (!recipient && notification.recipient_member_id) {
+      const { data: member } = await supabaseAdmin
+        .from('members')
+        .select('email')
+        .eq('id', notification.recipient_member_id)
+        .single();
+      recipient = member?.email || null;
+    }
 
-      if (!recipient) {
-        await markFailed(notification, 'No recipient email available');
+    if (!recipient) {
+      await markFailed(notification, 'No recipient email available');
+      summary.skipped++;
+      continue;
+    }
+
+    // Skip notifications whose referenced loan no longer exists
+    if (notification.payload?.loan_id) {
+      const { data: loan } = await supabaseAdmin
+        .from('loans')
+        .select('id')
+        .eq('id', notification.payload.loan_id)
+        .maybeSingle();
+
+      if (!loan) {
+        await markFailed(notification, 'Loan no longer exists — notification skipped');
         summary.skipped++;
         continue;
       }
+    }
 
-      const { error: sendError } = await resend.emails.send({
-        from: `${config.RESEND_FROM_NAME} <${config.RESEND_FROM_EMAIL}>`,
-        to: recipient,
-        subject: notification.subject,
-        text: notification.body,
-        html: buildEmailHtml(notification),
-      });
+    // Send via Resend
+    const { error: sendError } = await resend.emails.send({
+      from: `${config.RESEND_FROM_NAME} <${config.RESEND_FROM_EMAIL}>`,
+      to: recipient,
+      subject: notification.subject,
+      text: notification.body,
+      html: buildEmailHtml(notification),
+    });
+
+    // ... rest unchanged
 
       if (sendError) {
         throw new Error(sendError.message || 'Resend send failed');
