@@ -128,43 +128,65 @@ router.post('/login', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Email and password are required' });
   }
 
-  // 1. Sign in with Supabase
+  const normalizedEmail = email.trim().toLowerCase();
+  const clientIp = req.headers['cf-connecting-ip'] || req.ip || null;
+
+  // 1. Check per-account lockout BEFORE calling Supabase
+  let lockout = null;
+  try {
+    const { data } = await supabaseAdmin.rpc('check_login_lockout', {
+      p_email: normalizedEmail,
+      p_window_minutes: 15,
+      p_threshold: 5,
+    });
+    lockout = data;
+  } catch (err) {
+    console.warn('[auth] lockout check failed:', err.message);
+  }
+
+  if (lockout?.locked) {
+    return res.status(429).json({
+      error:
+        'Account temporarily locked due to repeated failed attempts. Please try again in 15 minutes.',
+      code: 'ACCOUNT_LOCKED',
+    });
+  }
+
+  // 2. Attempt Supabase login
   const { data: authData, error: authError } = await supabaseAnon.auth.signInWithPassword({
-    email,
+    email: normalizedEmail,
     password,
   });
 
   if (authError) {
-    console.error('❌ Supabase login error:', authError.message);
+    // Record the failed attempt without blocking the response
+    try {
+      await supabaseAdmin.rpc('record_login_attempt', {
+        p_email: normalizedEmail,
+        p_ip: clientIp,
+      });
+    } catch (err) {
+      console.warn('[auth] failed to record login attempt:', err.message);
+    }
+
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  // Debug logs
-  console.log('🔍 Login Debug:');
-  console.log('   authData.user.id:', authData.user.id);
-  console.log('   authData.user.email:', authData.user.email);
-
-  // 2. Get member record by EMAIL (this handles email mismatch)
+  // 3. Look up the member record
   const { data: member, error: memberError } = await supabaseAdmin
     .from('members')
     .select('id, staff_id, first_name, last_name, email, status, role')
-    .eq('email', email)   // ⬅️ CHANGED FROM auth_user_id
+    .eq('email', normalizedEmail)
     .single();
 
-  console.log('   member lookup error:', memberError?.message);
-  console.log('   member found:', member ? 'YES' : 'NO');
-
   if (memberError || !member) {
-    return res.status(401).json({ 
+    return res.status(401).json({
       error: 'Member record not found',
-      debug: {
-        email_searched: email,
-        auth_user_id: authData.user.id,
-      }
+      debug: { email_searched: normalizedEmail },
     });
   }
 
-  // 3. Check status
+  // 4. Check status
   if (
     member.status === 'Suspended' ||
     member.status === 'Terminated' ||
@@ -173,7 +195,14 @@ router.post('/login', asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'Account is not active' });
   }
 
-  // 4. Return Supabase access token
+  // 5. Successful login — clear the failure record for this email
+  try {
+    await supabaseAdmin.rpc('clear_login_attempts', { p_email: normalizedEmail });
+  } catch (err) {
+    console.warn('[auth] failed to clear login attempts:', err.message);
+  }
+
+  // 6. Return token and member
   res.json({
     success: true,
     token: authData.session.access_token,
@@ -188,33 +217,6 @@ router.post('/login', asyncHandler(async (req, res) => {
       status: member.status,
       role: member.role,
     },
-  });
-}));
-
-/**
- * POST /api/auth/refresh
- * Refresh an expired token
- */
-router.post('/refresh', asyncHandler(async (req, res) => {
-  const { refresh_token } = req.body;
-
-  if (!refresh_token) {
-    return res.status(400).json({ error: 'Refresh token is required' });
-  }
-
-  const { data, error } = await supabaseAnon.auth.refreshSession({
-    refresh_token,
-  });
-
-  if (error) {
-    return res.status(401).json({ error: 'Invalid refresh token' });
-  }
-
-  res.json({
-    success: true,
-    token: data.session.access_token,
-    refresh_token: data.session.refresh_token,
-    expires_at: data.session.expires_at,
   });
 }));
 
