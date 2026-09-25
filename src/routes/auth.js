@@ -12,19 +12,9 @@ const router = express.Router();
  */
 router.post('/register', asyncHandler(async (req, res) => {
   const {
-    staff_id,
-    email,
-    password,
-    first_name,
-    last_name,
-    middle_name,
-    phone,
-    department,
-    position,
-    home_address,
-    next_of_kin_name,
-    next_of_kin_phone,
-    next_of_kin_relationship,
+    staff_id, email, password, first_name, last_name, middle_name,
+    phone, department, position, home_address,
+    next_of_kin_name, next_of_kin_phone, next_of_kin_relationship,
     outside_indebtedness_declaration,
   } = req.body;
 
@@ -34,61 +24,28 @@ router.post('/register', asyncHandler(async (req, res) => {
     });
   }
 
-  // Check if staff_id already exists
   const { data: existingMember } = await supabaseAdmin
-    .from('members')
-    .select('id')
-    .eq('staff_id', staff_id)
-    .maybeSingle();
+    .from('members').select('id').eq('staff_id', staff_id).maybeSingle();
+  if (existingMember) return res.status(409).json({ error: 'Staff ID already registered' });
 
-  if (existingMember) {
-    return res.status(409).json({ error: 'Staff ID already registered' });
-  }
-
-  // Check if email already exists
   const { data: existingEmail } = await supabaseAdmin
-    .from('members')
-    .select('id')
-    .eq('email', email)
-    .maybeSingle();
+    .from('members').select('id').eq('email', email).maybeSingle();
+  if (existingEmail) return res.status(409).json({ error: 'Email already registered' });
 
-  if (existingEmail) {
-    return res.status(409).json({ error: 'Email already registered' });
-  }
-
-  // 1. Create auth user
   const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-    email,
-    password,
-    email_confirm: true,
-    user_metadata: {
-      staff_id,
-      first_name,
-      last_name,
-    },
+    email, password, email_confirm: true,
+    user_metadata: { staff_id, first_name, last_name },
   });
 
-  if (authError) {
-    return res.status(400).json({ error: authError.message });
-  }
+  if (authError) return res.status(400).json({ error: authError.message });
 
-  // 2. Create member record
   const { data: member, error: memberError } = await supabaseAdmin
     .from('members')
     .insert({
       auth_user_id: authData.user.id,
-      staff_id,
-      email,
-      first_name,
-      last_name,
-      middle_name,
-      phone,
-      department,
-      position,
-      home_address,
-      next_of_kin_name,
-      next_of_kin_phone,
-      next_of_kin_relationship,
+      staff_id, email, first_name, last_name, middle_name,
+      phone, department, position, home_address,
+      next_of_kin_name, next_of_kin_phone, next_of_kin_relationship,
       outside_indebtedness_declaration,
       status: 'Applicant',
       role: 'Member',
@@ -97,7 +54,6 @@ router.post('/register', asyncHandler(async (req, res) => {
     .single();
 
   if (memberError) {
-    // Rollback auth user creation
     await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
     return res.status(400).json({ error: memberError.message });
   }
@@ -119,11 +75,9 @@ router.post('/register', asyncHandler(async (req, res) => {
 
 /**
  * POST /api/auth/login
- * Login with email and password - returns Supabase access token
  */
 router.post('/login', asyncHandler(async (req, res) => {
   const { email, password } = req.body;
-
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required' });
   }
@@ -131,13 +85,10 @@ router.post('/login', asyncHandler(async (req, res) => {
   const normalizedEmail = email.trim().toLowerCase();
   const clientIp = req.headers['cf-connecting-ip'] || req.ip || null;
 
-  // 1. Check per-account lockout BEFORE calling Supabase
   let lockout = null;
   try {
     const { data } = await supabaseAdmin.rpc('check_login_lockout', {
-      p_email: normalizedEmail,
-      p_window_minutes: 15,
-      p_threshold: 5,
+      p_email: normalizedEmail, p_window_minutes: 15, p_threshold: 5,
     });
     lockout = data;
   } catch (err) {
@@ -146,33 +97,26 @@ router.post('/login', asyncHandler(async (req, res) => {
 
   if (lockout?.locked) {
     return res.status(429).json({
-      error:
-        'Account temporarily locked due to repeated failed attempts. Please try again in 15 minutes.',
+      error: 'Account temporarily locked due to repeated failed attempts. Please try again in 15 minutes.',
       code: 'ACCOUNT_LOCKED',
     });
   }
 
-  // 2. Attempt Supabase login
   const { data: authData, error: authError } = await supabaseAnon.auth.signInWithPassword({
-    email: normalizedEmail,
-    password,
+    email: normalizedEmail, password,
   });
 
   if (authError) {
-    // Record the failed attempt without blocking the response
     try {
       await supabaseAdmin.rpc('record_login_attempt', {
-        p_email: normalizedEmail,
-        p_ip: clientIp,
+        p_email: normalizedEmail, p_ip: clientIp,
       });
     } catch (err) {
       console.warn('[auth] failed to record login attempt:', err.message);
     }
-
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  // 3. Look up the member record
   const { data: member, error: memberError } = await supabaseAdmin
     .from('members')
     .select('id, staff_id, first_name, last_name, email, status, role')
@@ -186,23 +130,16 @@ router.post('/login', asyncHandler(async (req, res) => {
     });
   }
 
-  // 4. Check status
-  if (
-    member.status === 'Suspended' ||
-    member.status === 'Terminated' ||
-    member.status === 'Exited'
-  ) {
+  if (['Suspended', 'Terminated', 'Exited'].includes(member.status)) {
     return res.status(403).json({ error: 'Account is not active' });
   }
 
-  // 5. Successful login — clear the failure record for this email
   try {
     await supabaseAdmin.rpc('clear_login_attempts', { p_email: normalizedEmail });
   } catch (err) {
     console.warn('[auth] failed to clear login attempts:', err.message);
   }
 
-  // 6. Return token and member
   res.json({
     success: true,
     token: authData.session.access_token,
@@ -221,22 +158,61 @@ router.post('/login', asyncHandler(async (req, res) => {
 }));
 
 /**
- * GET /api/auth/me
- * Get current authenticated user
+ * POST /api/auth/refresh
  */
-router.get('/me', authenticateToken, asyncHandler(async (req, res) => {
+router.post('/refresh', asyncHandler(async (req, res) => {
+  const { refresh_token } = req.body;
+  if (!refresh_token) {
+    return res.status(400).json({ error: 'refresh_token is required' });
+  }
+
+  const { data, error } = await supabaseAnon.auth.refreshSession({ refresh_token });
+
+  if (error || !data?.session) {
+    console.warn('[auth] refresh failed:', error?.message || 'no session');
+    return res.status(401).json({
+      error: 'Invalid or expired refresh token',
+      code: 'REFRESH_FAILED',
+    });
+  }
+
+  console.log('[auth] refresh rotated for user', data.session.user.id);
+
   res.json({
     success: true,
-    member: req.user,
+    token: data.session.access_token,
+    refresh_token: data.session.refresh_token,
+    expires_at: data.session.expires_at,
   });
 }));
 
 /**
- * POST /api/auth/logout
- * Logout (client-side token discard)
+ * GET /api/auth/me
  */
-router.post('/logout', (req, res) => {
+router.get('/me', authenticateToken, asyncHandler(async (req, res) => {
+  res.json({ success: true, member: req.user });
+}));
+
+/**
+ * POST /api/auth/logout
+ * Server-side logout — revokes the current Supabase session.
+ * Other devices where the same member is logged in stay active.
+ */
+router.post('/logout', authenticateToken, asyncHandler(async (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const accessToken = authHeader.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : null;
+
+  if (accessToken) {
+    try {
+      await supabaseAdmin.auth.admin.signOut(accessToken, 'local');
+    } catch (err) {
+      console.warn('[auth] logout revocation failed:', err.message);
+    }
+  }
+
   res.json({ success: true, message: 'Logged out successfully' });
-});
+}));
 
 export default router;
