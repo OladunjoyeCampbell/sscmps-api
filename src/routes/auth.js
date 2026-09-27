@@ -3,6 +3,7 @@ import express from 'express';
 import { supabaseAdmin, supabaseAnon } from '../lib/supabase.js';
 import { asyncHandler } from '../middleware/error.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { validatePassword } from '../lib/passwordPolicy.js';
 
 const router = express.Router();
 
@@ -261,18 +262,12 @@ router.post('/reset-password', asyncHandler(async (req, res) => {
   const { access_token, new_password } = req.body;
 
   if (!access_token || !new_password) {
-    return res.status(400).json({ error: 'access_token and new_password are required' });
-  }
-
-  // Basic password policy — enforce server-side, not just client-side
-  if (new_password.length < 8) {
     return res.status(400).json({
-      error: 'Password must be at least 8 characters',
-      code: 'PASSWORD_TOO_SHORT',
+      error: 'access_token and new_password are required',
     });
   }
 
-  // Verify the reset token by attempting to load the user
+  // 1. Verify the reset token first — everything below depends on `user`
   const {
     data: { user },
     error: verifyError,
@@ -285,7 +280,30 @@ router.post('/reset-password', asyncHandler(async (req, res) => {
     });
   }
 
-  // Update the password using the admin API
+  // 2. Look up the member record so the policy can check personal info
+  const { data: memberForPolicy } = await supabaseAdmin
+    .from('members')
+    .select('id, first_name, last_name, staff_id, email')
+    .eq('auth_user_id', user.id)
+    .maybeSingle();
+
+  // 3. Enforce the full password policy server-side
+  const policy = validatePassword(new_password, {
+    email: memberForPolicy?.email || user.email,
+    firstName: memberForPolicy?.first_name,
+    lastName: memberForPolicy?.last_name,
+    staffId: memberForPolicy?.staff_id,
+  });
+
+  if (!policy.valid) {
+    return res.status(400).json({
+      error: policy.errors[0] || 'Password does not meet the policy',
+      errors: policy.errors,
+      code: 'PASSWORD_POLICY',
+    });
+  }
+
+  // 4. Update the password via the admin API
   const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
     user.id,
     { password: new_password }
@@ -298,8 +316,8 @@ router.post('/reset-password', asyncHandler(async (req, res) => {
     });
   }
 
-  // Clear any lingering login attempts for this account — the reset
-  // is proof the user owns the email, so the lockout should lift.
+  // 5. Clear any lingering login attempts for this account — the reset
+  //    is proof the user owns the email, so the lockout should lift.
   try {
     await supabaseAdmin.rpc('clear_login_attempts', {
       p_email: user.email.toLowerCase(),
@@ -370,5 +388,124 @@ router.post('/logout', authenticateToken, asyncHandler(async (req, res) => {
 
   res.json({ success: true, message: 'Logged out successfully' });
 }));
+/**
+ * POST /api/auth/change-password
+ * Change the password for the currently logged-in member.
+ * Requires the current password for verification.
+ */
+router.post('/change-password', authenticateToken, asyncHandler(async (req, res) => {
+  const { current_password, new_password } = req.body;
 
+  if (!current_password || !new_password) {
+    return res.status(400).json({
+      error: 'current_password and new_password are required',
+    });
+  }
+
+  // 1. Verify the current password by re-authenticating with Supabase
+  const authHeader = req.headers.authorization || '';
+  const accessToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+
+  const {
+    data: { user },
+    error: verifyError,
+  } = await supabaseAdmin.auth.getUser(accessToken);
+
+  if (verifyError || !user) {
+    return res.status(401).json({ error: 'Invalid session' });
+  }
+
+  // Re-authenticate to confirm the current password
+  const { error: signInError } = await supabaseAnon.auth.signInWithPassword({
+    email: user.email,
+    password: current_password,
+  });
+
+  if (signInError) {
+    return res.status(401).json({
+      error: 'Current password is incorrect',
+      code: 'INVALID_CURRENT_PASSWORD',
+    });
+  }
+
+  // 2. Reject if new password equals current
+  if (current_password === new_password) {
+    return res.status(400).json({
+      error: 'New password must be different from your current password',
+      code: 'SAME_PASSWORD',
+    });
+  }
+
+  // 3. Enforce the full password policy server-side
+  const { data: member } = await supabaseAdmin
+    .from('members')
+    .select('first_name, last_name, staff_id, email')
+    .eq('auth_user_id', user.id)
+    .maybeSingle();
+
+  const policy = validatePassword(new_password, {
+    email: member?.email || user.email,
+    firstName: member?.first_name,
+    lastName: member?.last_name,
+    staffId: member?.staff_id,
+  });
+
+  if (!policy.valid) {
+    return res.status(400).json({
+      error: policy.errors[0] || 'Password does not meet the policy',
+      errors: policy.errors,
+      code: 'PASSWORD_POLICY',
+    });
+  }
+
+  // 4. Update the password via the admin API
+  const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
+    user.id,
+    { password: new_password }
+  );
+
+  if (updateError) {
+    console.error('[auth] change-password update failed:', updateError.message);
+    return res.status(400).json({
+      error: updateError.message || 'Failed to update password',
+    });
+  }
+
+  // 5. Audit
+  try {
+    await supabaseAdmin.rpc('write_audit', {
+      p_action: 'PASSWORD_CHANGED',
+      p_resource_type: 'member',
+      p_resource_id: member?.id || null,
+      p_details: { self_service: true },
+    });
+  } catch (err) {
+    console.warn('[auth] audit failed:', err.message);
+  }
+
+  // 6. In-app notification so the member sees the record
+  if (member?.id) {
+    try {
+      await supabaseAdmin.rpc('queue_notification', {
+        p_member_id: member.id,
+        p_category: 'SYSTEM',
+        p_subject: 'Password changed',
+        p_body:
+          'Your password was changed. If this was not you, contact the Secretary immediately.',
+        p_payload: {},
+      });
+    } catch (err) {
+      console.warn('[auth] notification failed:', err.message);
+    }
+  }
+
+  res.json({
+    success: true,
+    message: 'Password updated successfully',
+  });
+}));
 export default router;
