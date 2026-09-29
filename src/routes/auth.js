@@ -18,12 +18,29 @@ router.post('/register', asyncHandler(async (req, res) => {
     next_of_kin_name, next_of_kin_phone, next_of_kin_relationship,
     outside_indebtedness_declaration,
   } = req.body;
-
   if (!staff_id || !email || !password || !first_name || !last_name) {
     return res.status(400).json({
       error: 'Missing required fields: staff_id, email, password, first_name, last_name',
     });
   }
+  // Enforce the password policy server-side. The frontend validates too,
+// but a direct API call could otherwise create a member with a weak
+// password and bypass the 12-character minimum.
+  const policy = validatePassword(password, {
+    email,
+    firstName: first_name,
+    lastName: last_name,
+    staffId: staff_id,
+  });
+
+  if (!policy.valid) {
+    return res.status(400).json({
+      error: policy.errors[0] || 'Password does not meet the policy',
+      errors: policy.errors,
+      code: 'PASSWORD_POLICY',
+    });
+  }
+  
 
   const { data: existingMember } = await supabaseAdmin
     .from('members').select('id').eq('staff_id', staff_id).maybeSingle();
