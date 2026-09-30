@@ -111,21 +111,76 @@ router.get(
 // GET /api/treasury/pending
 // Unified pending queue.
 // ---------------------------------------------------------------------
-router.get(
-  '/pending',
-  requireTreasurer,
-  asyncHandler(async (req, res) => {
-    const { data: pending, error } = await supabaseAdmin
-      .from('pending_transactions')
-      .select('*');
+router.get('/pending', requireTreasurer, asyncHandler(async (req, res) => {
+  const { data: pending, error } = await supabaseAdmin
+    .from('pending_transactions')
+    .select('*');
 
-    if (error) {
-      return res.status(400).json({ error: error.message });
+  if (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  // Enrich each row's proposed_loan_allocations with the current
+  // status of each referenced loan. Flags allocations whose loan is
+  // missing or inactive so the treasurer UI can warn before approval.
+  const loanIds = new Set();
+  for (const row of pending || []) {
+    const allocs = Array.isArray(row.proposed_loan_allocations)
+      ? row.proposed_loan_allocations
+      : [];
+    for (const a of allocs) {
+      if (a?.loan_id) loanIds.add(a.loan_id);
     }
+  }
 
-    res.json({ success: true, pending: pending || [] });
-  })
-);
+  let loanStatusMap = {};
+  if (loanIds.size > 0) {
+    const { data: loans } = await supabaseAdmin
+      .from('loans')
+      .select('id, loan_reference, status, member_id')
+      .in('id', [...loanIds]);
+
+    for (const l of loans || []) {
+      loanStatusMap[l.id] = l;
+    }
+  }
+
+  const isActiveStatus = (s) => s === 'Active' || s === 'Disbursed';
+
+  const enriched = (pending || []).map((row) => {
+    const allocs = Array.isArray(row.proposed_loan_allocations)
+      ? row.proposed_loan_allocations
+      : [];
+
+    const enrichedAllocs = allocs.map((a) => {
+      const loan = a?.loan_id ? loanStatusMap[a.loan_id] : null;
+      const isMissing = !loan;
+      const isInactive = loan && !isActiveStatus(loan.status);
+      const belongsToOther = loan && row.member_id && loan.member_id !== row.member_id;
+
+      return {
+        ...a,
+        loan_reference: loan?.loan_reference || null,
+        loan_status: loan?.status || null,
+        is_missing: isMissing,
+        is_inactive: isInactive,
+        belongs_to_other_member: belongsToOther,
+      };
+    });
+
+    const hasStaleAllocation = enrichedAllocs.some(
+      (a) => a.is_missing || a.is_inactive || a.belongs_to_other_member
+    );
+
+    return {
+      ...row,
+      proposed_loan_allocations: enrichedAllocs,
+      has_stale_allocation: hasStaleAllocation,
+    };
+  });
+
+  res.json({ success: true, pending: enriched });
+}));
 
 // ---------------------------------------------------------------------
 // GET /api/treasury/unidentified
