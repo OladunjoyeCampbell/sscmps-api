@@ -475,65 +475,83 @@ router.post(
     res.json({ success: true, message: "Logged out successfully" });
   }),
 );
+
 /**
  * POST /api/auth/logout-all
  * Revoke every session for the current member, on every device.
- * Used when a device is lost or a password may be compromised.
+ *
+ * How it works:
+ *   1. Stamp members.session_invalidated_at = now().
+ *      The middleware rejects any JWT whose `iat` is older than this,
+ *      on every device.
+ *   2. Best-effort call to Supabase admin signOut with scope='global'
+ *      so Supabase's own session list is tidy.
+ *   3. Write an audit entry + queue an in-app notification.
  */
-router.post(
-  "/logout-all",
-  authenticateToken,
-  asyncHandler(async (req, res) => {
-    const authHeader = req.headers.authorization || "";
-    const accessToken = authHeader.startsWith("Bearer ")
-      ? authHeader.slice(7)
-      : null;
+router.post('/logout-all', authenticateToken, asyncHandler(async (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const accessToken = authHeader.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : null;
 
-    if (!accessToken) {
-      return res.status(401).json({ error: "No token provided" });
-    }
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
 
-    try {
-      await supabaseAdmin.auth.admin.signOut(accessToken, "global");
-    } catch (err) {
-      console.error("[auth] global signOut failed:", err.message);
-      return res.status(500).json({
-        error: "Failed to revoke sessions. Please try again.",
-      });
-    }
+  // 1. Stamp the invalidation time. This is the real enforcement.
+  const { error: stampError } = await supabaseAdmin
+    .from('members')
+    .update({ session_invalidated_at: new Date().toISOString() })
+    .eq('id', req.user.id);
 
-    // Audit log
-    try {
-      await supabaseAdmin.rpc("write_audit", {
-        p_action: "SIGN_OUT_EVERYWHERE",
-        p_resource_type: "member",
-        p_resource_id: req.user.id,
-        p_details: { self_service: true },
-      });
-    } catch (err) {
-      console.warn("[auth] audit failed:", err.message);
-    }
-
-    // Notification so the member has a record
-    try {
-      await supabaseAdmin.rpc("queue_notification", {
-        p_member_id: req.user.id,
-        p_category: "SYSTEM",
-        p_subject: "Signed out of all devices",
-        p_body:
-          "Every session on your account has been signed out. If this was not you, contact the Secretary immediately.",
-        p_payload: {},
-      });
-    } catch (err) {
-      console.warn("[auth] notification failed:", err.message);
-    }
-
-    res.json({
-      success: true,
-      message: "Signed out of all devices.",
+  if (stampError) {
+    console.error('[auth] failed to stamp session_invalidated_at:', stampError.message);
+    return res.status(500).json({
+      error: 'Failed to revoke sessions. Please try again.',
     });
-  }),
-);
+  }
+
+  // 2. Best-effort: also tell Supabase to clear its session list.
+  //    Non-fatal if it fails — the middleware check above is what
+  //    actually rejects tokens on other devices.
+  try {
+    await supabaseAdmin.auth.admin.signOut(accessToken, 'global');
+  } catch (err) {
+    console.warn('[auth] Supabase global signOut failed (non-fatal):', err.message);
+  }
+
+  // 3. Audit
+  try {
+    await supabaseAdmin.rpc('write_audit', {
+      p_action: 'SIGN_OUT_EVERYWHERE',
+      p_resource_type: 'member',
+      p_resource_id: req.user.id,
+      p_details: { self_service: true },
+    });
+  } catch (err) {
+    console.warn('[auth] audit failed:', err.message);
+  }
+
+  // 4. Notification
+  try {
+    await supabaseAdmin.rpc('queue_notification', {
+      p_member_id: req.user.id,
+      p_category: 'SYSTEM',
+      p_subject: 'Signed out of all devices',
+      p_body:
+        'Every session on your account has been signed out. If this was not you, contact the Secretary immediately.',
+      p_payload: {},
+    });
+  } catch (err) {
+    console.warn('[auth] notification failed:', err.message);
+  }
+
+  res.json({
+    success: true,
+    message: 'Signed out of all devices.',
+  });
+}));
+
 /**
  * POST /api/auth/change-password
  * Change the password for the currently logged-in member.
