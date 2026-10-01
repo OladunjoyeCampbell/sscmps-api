@@ -204,7 +204,9 @@ router.post(
 
     const { data: member, error: memberError } = await supabaseAdmin
       .from("members")
-      .select("id, staff_id, first_name, last_name, email, status, role")
+      .select(
+        "id, staff_id, first_name, last_name, email, status, role, session_invalidated_at",
+      )
       .eq("email", normalizedEmail)
       .single();
 
@@ -217,6 +219,23 @@ router.post(
 
     if (["Suspended", "Terminated", "Exited"].includes(member.status)) {
       return res.status(403).json({ error: "Account is not active" });
+    }
+
+    // A successful login starts a new session. Any previous
+    // "sign out everywhere" marker no longer applies — clear it so
+    // the refresh endpoint will accept future refresh attempts.
+    if (member.session_invalidated_at) {
+      try {
+        await supabaseAdmin
+          .from("members")
+          .update({ session_invalidated_at: null })
+          .eq("id", member.id);
+      } catch (err) {
+        console.warn(
+          "[auth] failed to clear session_invalidated_at:",
+          err.message,
+        );
+      }
     }
 
     try {
@@ -407,6 +426,15 @@ router.post(
 );
 /**
  * POST /api/auth/refresh
+ * Rotate the refresh token and issue a new access token.
+ *
+ * Refuses to refresh when the member has signed out everywhere.
+ * Without this check, a revoked device could use its still-valid
+ * refresh token to mint a new access token with a fresh iat —
+ * bypassing the session_invalidated_at check in the middleware.
+ *
+ * The stamp is cleared on the next successful login, so this only
+ * blocks sessions that predate the sign-out-everywhere.
  */
 router.post(
   "/refresh",
@@ -425,6 +453,23 @@ router.post(
       return res.status(401).json({
         error: "Invalid or expired refresh token",
         code: "REFRESH_FAILED",
+      });
+    }
+
+    // Reject the refresh if the member signed out everywhere since
+    // this session began. The stamp is cleared on the next
+    // successful login, so this only blocks sessions that predate
+    // the sign-out.
+    const { data: member } = await supabaseAdmin
+      .from("members")
+      .select("id, session_invalidated_at")
+      .eq("auth_user_id", data.session.user.id)
+      .maybeSingle();
+
+    if (member?.session_invalidated_at) {
+      return res.status(401).json({
+        error: "Your session was ended. Please log in again.",
+        code: "SESSION_REVOKED",
       });
     }
 
@@ -488,69 +533,79 @@ router.post(
  *      so Supabase's own session list is tidy.
  *   3. Write an audit entry + queue an in-app notification.
  */
-router.post('/logout-all', authenticateToken, asyncHandler(async (req, res) => {
-  const authHeader = req.headers.authorization || '';
-  const accessToken = authHeader.startsWith('Bearer ')
-    ? authHeader.slice(7)
-    : null;
+router.post(
+  "/logout-all",
+  authenticateToken,
+  asyncHandler(async (req, res) => {
+    const authHeader = req.headers.authorization || "";
+    const accessToken = authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : null;
 
-  if (!accessToken) {
-    return res.status(401).json({ error: 'No token provided' });
-  }
+    if (!accessToken) {
+      return res.status(401).json({ error: "No token provided" });
+    }
 
-  // 1. Stamp the invalidation time. This is the real enforcement.
-  const { error: stampError } = await supabaseAdmin
-    .from('members')
-    .update({ session_invalidated_at: new Date().toISOString() })
-    .eq('id', req.user.id);
+    // 1. Stamp the invalidation time. This is the real enforcement.
+    const { error: stampError } = await supabaseAdmin
+      .from("members")
+      .update({ session_invalidated_at: new Date().toISOString() })
+      .eq("id", req.user.id);
 
-  if (stampError) {
-    console.error('[auth] failed to stamp session_invalidated_at:', stampError.message);
-    return res.status(500).json({
-      error: 'Failed to revoke sessions. Please try again.',
+    if (stampError) {
+      console.error(
+        "[auth] failed to stamp session_invalidated_at:",
+        stampError.message,
+      );
+      return res.status(500).json({
+        error: "Failed to revoke sessions. Please try again.",
+      });
+    }
+
+    // 2. Best-effort: also tell Supabase to clear its session list.
+    //    Non-fatal if it fails — the middleware check above is what
+    //    actually rejects tokens on other devices.
+    try {
+      await supabaseAdmin.auth.admin.signOut(accessToken, "global");
+    } catch (err) {
+      console.warn(
+        "[auth] Supabase global signOut failed (non-fatal):",
+        err.message,
+      );
+    }
+
+    // 3. Audit
+    try {
+      await supabaseAdmin.rpc("write_audit", {
+        p_action: "SIGN_OUT_EVERYWHERE",
+        p_resource_type: "member",
+        p_resource_id: req.user.id,
+        p_details: { self_service: true },
+      });
+    } catch (err) {
+      console.warn("[auth] audit failed:", err.message);
+    }
+
+    // 4. Notification
+    try {
+      await supabaseAdmin.rpc("queue_notification", {
+        p_member_id: req.user.id,
+        p_category: "SYSTEM",
+        p_subject: "Signed out of all devices",
+        p_body:
+          "Every session on your account has been signed out. If this was not you, contact the Secretary immediately.",
+        p_payload: {},
+      });
+    } catch (err) {
+      console.warn("[auth] notification failed:", err.message);
+    }
+
+    res.json({
+      success: true,
+      message: "Signed out of all devices.",
     });
-  }
-
-  // 2. Best-effort: also tell Supabase to clear its session list.
-  //    Non-fatal if it fails — the middleware check above is what
-  //    actually rejects tokens on other devices.
-  try {
-    await supabaseAdmin.auth.admin.signOut(accessToken, 'global');
-  } catch (err) {
-    console.warn('[auth] Supabase global signOut failed (non-fatal):', err.message);
-  }
-
-  // 3. Audit
-  try {
-    await supabaseAdmin.rpc('write_audit', {
-      p_action: 'SIGN_OUT_EVERYWHERE',
-      p_resource_type: 'member',
-      p_resource_id: req.user.id,
-      p_details: { self_service: true },
-    });
-  } catch (err) {
-    console.warn('[auth] audit failed:', err.message);
-  }
-
-  // 4. Notification
-  try {
-    await supabaseAdmin.rpc('queue_notification', {
-      p_member_id: req.user.id,
-      p_category: 'SYSTEM',
-      p_subject: 'Signed out of all devices',
-      p_body:
-        'Every session on your account has been signed out. If this was not you, contact the Secretary immediately.',
-      p_payload: {},
-    });
-  } catch (err) {
-    console.warn('[auth] notification failed:', err.message);
-  }
-
-  res.json({
-    success: true,
-    message: 'Signed out of all devices.',
-  });
-}));
+  }),
+);
 
 /**
  * POST /api/auth/change-password
