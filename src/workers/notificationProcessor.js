@@ -31,6 +31,25 @@ export async function processNotificationQueue() {
     console.warn('[cron] prune failed:', err.message);
   }
 
+  // Expire stale surety invitations on every cycle
+  try {
+    const { data: expired } = await supabaseAdmin.rpc('expire_stale_surety_requests');
+    if (expired > 0) {
+      console.log(`[cron] expired ${expired} stale surety invitation(s)`);
+    }
+  } catch (err) {
+    console.warn('[cron] surety expiry failed:', err.message);
+  }
+
+  // Send surety reminders to sureties approaching their deadline
+  try {
+    const { data: reminded } = await supabaseAdmin.rpc('send_surety_reminders');
+    if (reminded > 0) {
+      console.log(`[cron] queued ${reminded} surety reminder(s)`);
+    }
+  } catch (err) {
+    console.warn('[cron] surety reminders failed:', err.message);
+  }
   if (!config.RESEND_API_KEY) {
     console.warn('[notify] RESEND_API_KEY not set — skipping queue processing');
     return summary;

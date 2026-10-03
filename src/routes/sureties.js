@@ -8,6 +8,40 @@ import { requireLoanCommittee } from '../middleware/rbac.js';
 const router = express.Router();
 
 /**
+ * POST /api/sureties/release
+ * Release a surety from a Pending loan.
+ * Callable by the applicant, the surety themselves, or the committee.
+ * Once the loan is Approved, sureties are locked and cannot be released.
+ */
+router.post('/release', asyncHandler(async (req, res) => {
+  const { loan_id, surety_member_id, reason } = req.body;
+
+  if (!loan_id || !surety_member_id) {
+    return res.status(400).json({
+      error: 'loan_id and surety_member_id are required',
+    });
+  }
+
+  const result = await supabaseAdmin.rpc('release_surety', {
+    p_loan_id: loan_id,
+    p_surety_member_id: surety_member_id,
+    p_reason: reason || null,
+  });
+
+  if (result.error) {
+    return res.status(400).json({ error: result.error.message });
+  }
+  if (!result.data?.success) {
+    return res.status(400).json({
+      error: result.data?.error || 'Release failed',
+    });
+  }
+
+  res.json({ success: true, result: result.data });
+}));
+
+
+/**
  * POST /api/sureties/request
  * Request a surety for a loan (borrower)
  */

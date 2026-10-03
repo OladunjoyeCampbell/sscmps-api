@@ -156,11 +156,13 @@ router.get(
       eligible = eligible.filter((m) => !existingIds.includes(m.id));
     }
 
-    // Exclude members already at their 2-guarantee limit on active loans
+    // Exclude members already at their 2-guarantee limit.
+    // Statuses match accept_surety's capacity check: any non-Closed loan
+    // whose surety commitment is still live consumes capacity.
     const { data: activeLoans } = await supabaseAdmin
       .from('loans')
       .select('id')
-      .in('status', ['Active', 'Disbursed']);
+      .in('status', ['Pending', 'Approved', 'Disbursed', 'Active', 'Defaulted']);
 
     const activeLoanIds = (activeLoans || []).map((l) => l.id);
     const membersWithMaxGuarantees = [];

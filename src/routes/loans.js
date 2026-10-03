@@ -383,6 +383,34 @@ router.get('/all', requireTreasurer, asyncHandler(async (req, res) => {
 }));
 
 // ---------------------------------------------------------------------
+// POST /api/loans/:loanId/withdraw
+// Withdraw a Pending loan application. Releases all attached sureties.
+// Callable by the applicant or by committee/treasurer.
+// ---------------------------------------------------------------------
+router.post('/:loanId/withdraw', asyncHandler(async (req, res) => {
+  const { loanId } = req.params;
+  const { reason } = req.body;
+
+  const result = await supabaseAdmin.rpc('withdraw_loan_application', {
+    p_loan_id: loanId,
+    p_reason: reason || null,
+  });
+
+  if (result.error) {
+    return res.status(400).json({ error: result.error.message });
+  }
+  if (!result.data?.success) {
+    return res.status(400).json({
+      error: result.data?.error || 'Withdrawal failed',
+    });
+  }
+
+  await audit('WITHDRAW_LOAN_APPLICATION', 'loan', loanId, { reason }, req);
+  res.json({ success: true, result: result.data });
+}));
+
+
+// ---------------------------------------------------------------------
 // GET /api/loans/:loanId  (Full detail — owner or management)
 // MUST come after all specific /all, /my, /pending, /products etc.
 // ---------------------------------------------------------------------
