@@ -377,7 +377,7 @@ router.get('/all', requireTreasurer, asyncHandler(async (req, res) => {
   if (status) query = query.eq('status', status);
   if (member_id) query = query.eq('member_id', member_id);
 
-  const { data, error } = await query.order('created_at', { ascending: false });
+  const { data, error } = await query.order('loan_reference', { ascending: false });
   if (error) return res.status(400).json({ error: error.message });
   res.json({ success: true, loans: data || [] });
 }));
