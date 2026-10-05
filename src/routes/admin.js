@@ -124,6 +124,282 @@ router.post(
 );
 
 /**
+ * GET /api/admin/members
+ * Searchable, paginated list of existing members.
+ * Access: Secretary, Treasurer, Chairman, ManagementCommittee, SystemAdmin
+ */
+router.get(
+  '/members',
+  requireAdmissionCommittee,
+  asyncHandler(async (req, res) => {
+    const {
+      search = '',
+      status,
+      role,
+      limit = 50,
+      offset = 0,
+    } = req.query;
+
+    let query = supabaseAdmin
+      .from('members')
+      .select(
+        `id, staff_id, registration_number, first_name, middle_name, last_name,
+         email, phone, department, position, status, role,
+         admission_date, first_contribution_date, created_at`,
+        { count: 'exact' }
+      )
+      .order('staff_id', { ascending: true });
+
+    if (status) query = query.eq('status', status);
+    if (role) query = query.eq('role', role);
+
+    if (search && search.trim()) {
+      const q = `%${search.trim()}%`;
+      query = query.or(
+        `staff_id.ilike.${q},registration_number.ilike.${q},first_name.ilike.${q},last_name.ilike.${q},email.ilike.${q},phone.ilike.${q},department.ilike.${q}`
+      );
+    }
+
+    const limitN = Math.min(parseInt(limit, 10) || 50, 200);
+    const offsetN = parseInt(offset, 10) || 0;
+
+    const { data, error, count } = await query.range(
+      offsetN,
+      offsetN + limitN - 1
+    );
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({
+      success: true,
+      members: data || [],
+      pagination: {
+        total: count,
+        limit: limitN,
+        offset: offsetN,
+      },
+    });
+  })
+);
+
+/**
+ * GET /api/admin/members/:id
+ * Full detail for a single member, including recent loans and payments.
+ */
+router.get(
+  '/members/:id',
+  requireAdmissionCommittee,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    const { data: member, error: memberError } = await supabaseAdmin
+      .from('members')
+      .select(
+        `id, staff_id, registration_number, first_name, middle_name, last_name,
+         email, phone, department, position, home_address,
+         next_of_kin_name, next_of_kin_phone, next_of_kin_relationship,
+         outside_indebtedness_declaration,
+         status, role, admission_date, first_contribution_date,
+         standing_contribution_amount, contribution_authority_reviewed,
+         contribution_authority_form_date,
+         termination_date, termination_reason,
+         admission_decision_at, admission_decision_by,
+         session_invalidated_at,
+         auth_user_id, created_at, updated_at`
+      )
+      .eq('id', id)
+      .maybeSingle();
+
+    if (memberError || !member) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+
+    // Recent loans (up to 10)
+    const { data: loans } = await supabaseAdmin
+      .from('loans')
+      .select(
+        `id, loan_reference, principal_amount, total_repayable, total_repaid,
+         status, application_date, disbursed_at, term_months`
+      )
+      .eq('member_id', id)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    // Recent payments (up to 10)
+    const { data: payments } = await supabaseAdmin
+      .from('payment_notifications')
+      .select(
+        `id, amount, payment_reference, transaction_date, status, source, created_at`
+      )
+      .eq('member_id', id)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    // Guarantees given by this member (up to 10)
+    const { data: suretiesGiven } = await supabaseAdmin
+      .from('sureties')
+      .select(
+        `id, loan_id, status, consent_given_at,
+         loans(loan_reference, principal_amount, status,
+                members!loans_member_id_fkey(first_name, last_name, staff_id))`
+      )
+      .eq('surety_member_id', id)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    // Savings balance (RPC)
+    const { data: savingsBalance } = await supabaseAdmin.rpc(
+      'get_member_savings_balance',
+      { p_member_id: id }
+    );
+
+    const { data: outstandingLoans } = await supabaseAdmin.rpc(
+      'get_member_total_outstanding_loans',
+      { p_member_id: id }
+    );
+
+    res.json({
+      success: true,
+      member,
+      savings_balance: savingsBalance || 0,
+      loans_outstanding: outstandingLoans || 0,
+      recent_loans: loans || [],
+      recent_payments: payments || [],
+      sureties_given: suretiesGiven || [],
+    });
+  })
+);
+
+/**
+ * PUT /api/admin/members/:id/email
+ * Change a member's email address. Audited separately because email
+ * is a security credential.
+ */
+router.put(
+  '/members/:id/email',
+  requireAdmissionCommittee,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { email } = req.body;
+
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'A valid email address is required' });
+    }
+
+    const normalized = email.trim().toLowerCase();
+
+    // Check for collisions
+    const { data: existing } = await supabaseAdmin
+      .from('members')
+      .select('id')
+      .eq('email', normalized)
+      .neq('id', id)
+      .maybeSingle();
+
+    if (existing) {
+      return res
+        .status(409)
+        .json({ error: 'Another member already uses that email address' });
+    }
+
+    const { data: member, error } = await supabaseAdmin
+      .from('members')
+      .select('id, email, auth_user_id')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (error || !member) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+
+    const oldEmail = member.email;
+
+    const { error: updateError } = await supabaseAdmin
+      .from('members')
+      .update({ email: normalized })
+      .eq('id', id);
+
+    if (updateError) {
+      return res.status(400).json({ error: updateError.message });
+    }
+
+    // If there is an auth user, update Supabase Auth as well so the
+    // member can log in with the new email immediately.
+    if (member.auth_user_id) {
+      const { error: authErr } = await supabaseAdmin.auth.admin.updateUserById(
+        member.auth_user_id,
+        { email: normalized, email_confirm: true }
+      );
+      if (authErr) {
+        console.warn('[admin] auth email update failed:', authErr.message);
+        // Don't roll back — the member record is the source of truth
+      }
+    }
+
+    await supabaseAdmin.rpc('write_audit', {
+      p_action: 'ADMIN_CHANGE_EMAIL',
+      p_resource_type: 'member',
+      p_resource_id: id,
+      p_details: { old_email: oldEmail, new_email: normalized },
+    });
+
+    res.json({
+      success: true,
+      message: 'Email updated. Ask the member to use Forgot password if needed.',
+    });
+  })
+);
+
+/**
+ * PUT /api/admin/members/:id
+ * Update editable fields (phone, department, position, home_address,
+ * next of kin). Does NOT allow email, name, staff_id, or role changes.
+ */
+router.put(
+  '/members/:id',
+  requireAdmissionCommittee,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    const allowed = [
+      'phone',
+      'department',
+      'position',
+      'home_address',
+      'next_of_kin_name',
+      'next_of_kin_phone',
+      'next_of_kin_relationship',
+    ];
+
+    const updates = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
+
+    const { error } = await supabaseAdmin
+      .from('members')
+      .update(updates)
+      .eq('id', id);
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    await supabaseAdmin.rpc('write_audit', {
+      p_action: 'ADMIN_UPDATE_MEMBER',
+      p_resource_type: 'member',
+      p_resource_id: id,
+      p_details: updates,
+    });
+
+    res.json({ success: true });
+  })
+);
+
+
+/**
  * POST /api/admin/members/update-status
  * Change a member's lifecycle status (Active / Suspended / Terminated / Exited).
  * Access: Chairman, Secretary, Treasurer, ManagementCommittee, SystemAdmin
