@@ -77,7 +77,7 @@ router.get('/pending', asyncHandler(async (req, res) => {
     .from('withdrawal_requests')
     .select(`
       *,
-      members(first_name, last_name, staff_id, email)
+      members!member_id(first_name, last_name, staff_id, email)
     `)
     .eq('status', 'Pending')
     .order('created_at', { ascending: true });
