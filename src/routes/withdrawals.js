@@ -181,12 +181,8 @@ router.get('/pending', asyncHandler(async (req, res) => {
   }
   const { data: withdrawals, error } = await supabaseAdmin
     .from('withdrawal_requests')
-    .select(`
-      *,
-      members!member_id(first_name, last_name, staff_id, email)
-    `),
-      withdrawal_signoffs(trustee_id, signed_at, trustee:members!trustee_id(first_name, last_name, role))	
-    .in('status', 'Pending')
+    .select('*, members!member_id(first_name, last_name, staff_id, email), withdrawal_signoffs(trustee_id, signed_at, trustee:members!trustee_id(first_name, last_name, role))')
+    .in('status', ['Pending', 'Approved'])
     .order('created_at', { ascending: true });
 
   if (error) {
