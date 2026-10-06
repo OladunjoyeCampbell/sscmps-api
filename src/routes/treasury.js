@@ -42,22 +42,24 @@ router.get(
       .gte('created_at', today);
 
     // Aggregate savings from ledger (non-loan entries only)
+    // Fines are tracking-only (Committee decision, Oct 2026) — they do not
+    // reduce savings. This must match get_member_savings_balance().
     const { data: savingsEntries } = await supabaseAdmin
       .from('ledger_entries')
       .select('transaction_type, amount')
       .eq('status', 'Approved')
       .is('loan_id', null)
-      .in('transaction_type', ['CONTRIBUTION', 'FINE', 'WITHDRAWAL']);
+      .in('transaction_type', ['CONTRIBUTION', 'ENTRANCE_FEE', 'WITHDRAWAL']);
 
     let totalSavings = 0;
     for (const entry of savingsEntries || []) {
       const amt = parseFloat(entry.amount);
-      if (entry.transaction_type === 'CONTRIBUTION') {
-        totalSavings += amt;
-      } else if (
-        entry.transaction_type === 'FINE' ||
-        entry.transaction_type === 'WITHDRAWAL'
+      if (
+        entry.transaction_type === 'CONTRIBUTION' ||
+        entry.transaction_type === 'ENTRANCE_FEE'
       ) {
+        totalSavings += amt;
+      } else if (entry.transaction_type === 'WITHDRAWAL') {
         totalSavings -= amt;
       }
     }
