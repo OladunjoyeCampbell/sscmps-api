@@ -7,7 +7,7 @@ import {
   requireSystemAdmin,
   requireTreasurer,
 } from '../middleware/rbac.js';
-import { getMemberId } from '../middleware/auth.js';
+import { getMemberId, getMemberRole } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -450,8 +450,11 @@ router.post(
  */
 router.get(
   '/audit-log',
-  requireSystemAdmin,
   asyncHandler(async (req, res) => {
+    const callerRole = getMemberRole(req);
+    if (!['Chairman', 'Secretary', 'Treasurer', 'SystemAdmin'].includes(callerRole)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
     const { limit = 100, offset = 0, action, from, to } = req.query;
 
     let query = supabaseAdmin.from('audit_log').select('*', { count: 'exact' });
