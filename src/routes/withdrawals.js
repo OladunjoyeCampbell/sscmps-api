@@ -184,8 +184,9 @@ router.get('/pending', asyncHandler(async (req, res) => {
     .select(`
       *,
       members!member_id(first_name, last_name, staff_id, email)
-    `)
-    .eq('status', 'Pending')
+    `),
+      withdrawal_signoffs(trustee_id, signed_at, trustee:members!trustee_id(first_name, last_name, role))	
+    .in('status', 'Pending')
     .order('created_at', { ascending: true });
 
   if (error) {
@@ -217,16 +218,51 @@ router.post('/approve', requireTrustee, asyncHandler(async (req, res) => {
       p_recorder_id: recorder_id
     });
 
-  if (!result.data) {
-    return res.status(400).json({ error: 'Failed to approve withdrawal' });
-  }
-
-  if (!result.data.success) {
-    return res.status(400).json({ error: result.data.error || 'Approval failed' });
-  }
+    if (result.error) {
+      return res.status(400).json({ error: result.error.message });
+    }
+    if (!result.data) {
+      return res.status(400).json({ error: 'RPC returned no data' });
+    }
+    if (!result.data.success) {
+      return res.status(400).json({ error: result.data.error || 'Approval failed' });
+    }
 
   res.json({ success: true, result: result.data });
 }));
+
+/**
+ * POST /api/withdrawals/signoff
+ * Records one trustee's signature on a pending withdrawal.
+ * Two distinct signatures auto-approve the request.
+ */
+router.post(
+  '/signoff',
+  requireTrustee,
+  asyncHandler(async (req, res) => {
+    const memberId = getMemberId(req);
+    const { request_id } = req.body;
+
+    if (!request_id) {
+      return res.status(400).json({ error: 'request_id is required' });
+    }
+
+    const result = await supabaseAdmin.rpc('record_withdrawal_signoff', {
+      p_request_id: request_id,
+      p_trustee_id: memberId,
+    });
+
+    if (result.error) {
+      return res.status(400).json({ error: result.error.message });
+    }
+    if (!result.data?.success) {
+      return res.status(400).json({ error: result.data?.error || 'Sign-off failed' });
+    }
+
+    res.json({ success: true, result: result.data });
+  })
+);
+
 
 /**
  * POST /api/withdrawals/process
