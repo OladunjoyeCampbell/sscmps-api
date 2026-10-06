@@ -333,6 +333,79 @@ router.get(
   })
 );
 
+/**
+ * POST /api/treasury/bank-transactions
+ * Manually add a single bank transaction (from a printed statement).
+ * Treasurer only. Duplicates (same bank_reference) are safely ignored.
+ */
+router.post(
+  '/bank-transactions',
+  requireTreasurer,
+  asyncHandler(async (req, res) => {
+    const {
+      transaction_date,
+      amount,
+      bank_reference,
+      sender_name,
+      sender_account,
+      narration,
+    } = req.body;
+
+    if (!transaction_date || !amount) {
+      return res.status(400).json({
+        error: 'transaction_date and amount are required',
+      });
+    }
+
+    if (parseFloat(amount) <= 0) {
+      return res.status(400).json({ error: 'amount must be greater than zero' });
+    }
+
+    // If a bank_reference is supplied, check for duplicates first.
+    if (bank_reference) {
+      const { data: existing } = await supabaseAdmin
+        .from('bank_transactions')
+        .select('id')
+        .eq('bank_reference', bank_reference)
+        .maybeSingle();
+
+      if (existing) {
+        return res.status(409).json({
+          error: 'A bank transaction with that reference already exists',
+          existing_id: existing.id,
+        });
+      }
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('bank_transactions')
+      .insert({
+        transaction_date,
+        amount: parseFloat(amount),
+        bank_reference: bank_reference || null,
+        sender_name: sender_name || null,
+        sender_account: sender_account || null,
+        narration: narration || null,
+        description: narration || null,
+        source: 'MANUAL_IMPORT',
+        status: 'Unmatched',
+      })
+      .select()
+      .single();
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    await supabaseAdmin.rpc('write_audit', {
+      p_action: 'MANUAL_BANK_TRANSACTION',
+      p_resource_type: 'bank_transaction',
+      p_resource_id: data.id,
+      p_details: { amount: parseFloat(amount), bank_reference },
+    });
+
+    res.json({ success: true, transaction: data });
+  })
+);
+
 // ---------------------------------------------------------------------
 // POST /api/treasury/ingest-api-credit
 // Ingest an API credit from a bank feed.
