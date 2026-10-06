@@ -6,44 +6,150 @@ import { requireTreasurer, requireTrustee } from '../middleware/rbac.js';
 
 const router = express.Router();
 
-/**
- * POST /api/withdrawals/request
- * Request a withdrawal (member)
- */
-router.post('/request', asyncHandler(async (req, res) => {
-  const memberId = getMemberId(req);
-  const { withdrawal_type, requested_amount, reason } = req.body;
+router.post(
+  '/request',
+  asyncHandler(async (req, res) => {
+    const memberId = getMemberId(req);
+    const { withdrawal_type, requested_amount, reason } = req.body;
 
-  if (!withdrawal_type || !requested_amount) {
-    return res.status(400).json({ error: 'withdrawal_type and requested_amount are required' });
-  }
+    // ── Validation ─────────────────────────────────────────────
+    if (!withdrawal_type || !requested_amount) {
+      return res.status(400).json({
+        error: 'withdrawal_type and requested_amount are required',
+      });
+    }
+    if (!['RETIREMENT', 'TERMINATION', 'FINAL_EXIT'].includes(withdrawal_type)) {
+      return res.status(400).json({ error: 'Invalid withdrawal_type' });
+    }
+    if (requested_amount <= 0) {
+      return res.status(400).json({
+        error: 'requested_amount must be greater than zero',
+      });
+    }
 
-  if (!['RETIREMENT', 'TERMINATION', 'FINAL_EXIT'].includes(withdrawal_type)) {
-    return res.status(400).json({ error: 'Invalid withdrawal_type' });
-  }
+    // ── Member lookup ─────────────────────────────────────────
+    const { data: member, error: memberErr } = await supabaseAdmin
+      .from('members')
+      .select('id, status, first_name, last_name')
+      .eq('id', memberId)
+      .maybeSingle();
 
-  if (requested_amount <= 0) {
-    return res.status(400).json({ error: 'requested_amount must be greater than zero' });
-  }
+    if (memberErr || !member) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+    if (member.status === 'Applicant') {
+      return res.status(400).json({
+        error: 'Only active members can request withdrawals',
+      });
+    }
+    if (member.status === 'Suspended') {
+      return res.status(400).json({
+        error: 'Suspended members cannot request withdrawals',
+      });
+    }
 
-  const result = await supabaseAdmin
-    .rpc('submit_withdrawal_request', {
-      p_withdrawal_type: withdrawal_type,
-      p_requested_amount: requested_amount,
-      p_reason: reason || null
+    // ── Balance check ─────────────────────────────────────────
+    const { data: balanceData } = await supabaseAdmin.rpc(
+      'get_member_savings_balance',
+      { p_member_id: memberId }
+    );
+    const available = Number(balanceData || 0);
+
+    if (requested_amount > available) {
+      return res.status(400).json({
+        error: `Withdrawal exceeds your available balance of ₦${available.toLocaleString()}`,
+      });
+    }
+
+    if (withdrawal_type === 'RETIREMENT' && requested_amount > available * 0.5) {
+      return res.status(400).json({
+        error: 'Retirement withdrawal may not exceed 50% of your savings',
+      });
+    }
+
+    // ── Duplicate check ───────────────────────────────────────
+    const { data: existing } = await supabaseAdmin
+      .from('withdrawal_requests')
+      .select('id, status')
+      .eq('member_id', memberId)
+      .eq('status', 'Pending')
+      .maybeSingle();
+
+    if (existing) {
+      return res.status(409).json({
+        error: 'You already have a pending withdrawal request',
+        existing_id: existing.id,
+      });
+    }
+
+    // ── Insert ────────────────────────────────────────────────
+    // Charge and net_amount are provisional at submission. The approval
+    // step (approve_withdrawal) recalculates them — the 2% charge applies
+    // to RETIREMENT only.
+    const { data: inserted, error: insertErr } = await supabaseAdmin
+      .from('withdrawal_requests')
+      .insert({
+        member_id: memberId,
+        withdrawal_type,
+        requested_amount: Number(requested_amount),
+        charge_amount: 0,
+        net_amount: Number(requested_amount),
+        reason: reason || null,
+        status: 'Pending',
+        created_by: memberId,
+      })
+      .select('id')
+      .single();
+
+    if (insertErr) {
+      console.error('[withdrawals.request]', insertErr);
+      return res.status(400).json({ error: insertErr.message });
+    }
+
+    // ── Audit ─────────────────────────────────────────────────
+    try {
+      await supabaseAdmin.rpc('write_audit', {
+        p_action: 'SUBMIT_WITHDRAWAL_REQUEST',
+        p_resource_type: 'withdrawal_request',
+        p_resource_id: inserted.id,
+        p_details: {
+          amount: Number(requested_amount),
+          type: withdrawal_type,
+          reason: reason || null,
+        },
+      });
+    } catch (err) {
+      console.warn('[withdrawals.request] audit failed:', err.message);
+    }
+
+    // ── Notify Treasurer ──────────────────────────────────────
+    try {
+      const { data: treasurers } = await supabaseAdmin
+        .from('members')
+        .select('id')
+        .eq('role', 'Treasurer')
+        .eq('status', 'Active');
+
+      for (const t of treasurers || []) {
+        await supabaseAdmin.rpc('queue_notification', {
+          p_member_id: t.id,
+          p_category: 'PENDING_QUEUE',
+          p_subject: 'New withdrawal request',
+          p_body: `${member.first_name} ${member.last_name} has submitted a ${withdrawal_type.toLowerCase()} withdrawal request for ₦${Number(requested_amount).toLocaleString()}.`,
+          p_payload: { withdrawal_id: inserted.id },
+        });
+      }
+    } catch (err) {
+      console.warn('[withdrawals.request] notify failed:', err.message);
+    }
+
+    res.json({
+      success: true,
+      withdrawal_id: inserted.id,
+      message: 'Withdrawal request submitted for approval',
     });
-
-  if (!result.data) {
-    return res.status(400).json({ error: 'Failed to submit withdrawal request' });
-  }
-
-  res.json({
-    success: true,
-    withdrawal_id: result.data,
-    message: 'Withdrawal request submitted for approval'
-  });
-}));
-
+  })
+);
 /**
  * GET /api/withdrawals/my
  * Get withdrawal requests for the current member
