@@ -68,7 +68,11 @@ router.get('/my', asyncHandler(async (req, res) => {
  * GET /api/withdrawals/pending
  * Get pending withdrawals (Treasurer/Management)
  */
-router.get('/pending', requireTreasurer, asyncHandler(async (req, res) => {
+router.get('/pending', asyncHandler(async (req, res) => {
+  const role = getMemberRole(req);
+  if (!['Treasurer', 'Chairman', 'Secretary', 'SystemAdmin'].includes(role)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
   const { data: withdrawals, error } = await supabaseAdmin
     .from('withdrawal_requests')
     .select(`
