@@ -468,9 +468,59 @@ router.get(
 
     if (error) return res.status(400).json({ error: error.message });
 
+    // ── Enrichment: resolve member IDs to names ────────────────────
+    // Collect every UUID that appears in actor_id, resource_id (for
+    // member resources), or anywhere inside the details JSON. Look them
+    // up in one query and return a map for the frontend to join against.
+    const UUID_RE =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+    const collectIds = (val, acc) => {
+      if (val == null) return;
+      if (typeof val === 'string' && UUID_RE.test(val)) {
+        acc.add(val);
+        return;
+      }
+      if (Array.isArray(val)) {
+        val.forEach((v) => collectIds(v, acc));
+        return;
+      }
+      if (typeof val === 'object') {
+        Object.values(val).forEach((v) => collectIds(v, acc));
+      }
+    };
+
+    const ids = new Set();
+    for (const log of logs || []) {
+      if (log.actor_id) ids.add(log.actor_id);
+      if (log.resource_type === 'member' && log.resource_id) {
+        ids.add(log.resource_id);
+      }
+      if (log.details) collectIds(log.details, ids);
+    }
+
+    const memberLookup = {};
+    if (ids.size > 0) {
+      const { data: members } = await supabaseAdmin
+        .from('members')
+        .select('id, staff_id, first_name, last_name, role')
+        .in('id', [...ids]);
+
+      for (const m of members || []) {
+        memberLookup[m.id] = {
+          staff_id: m.staff_id,
+          first_name: m.first_name,
+          last_name: m.last_name,
+          role: m.role,
+          full_name: `${m.first_name} ${m.last_name}`,
+        };
+      }
+    }
+
     res.json({
       success: true,
       logs,
+      member_lookup: memberLookup,
       pagination: {
         total: count,
         limit: parseInt(limit),
