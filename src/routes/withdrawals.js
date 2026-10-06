@@ -1,3 +1,4 @@
+// src/routes/withdrawals.js
 import express from 'express';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { asyncHandler } from '../middleware/error.js';
@@ -6,13 +7,53 @@ import { requireTreasurer, requireTrustee } from '../middleware/rbac.js';
 
 const router = express.Router();
 
+// Roles allowed to view the pending withdrawal queue.
+const QUEUE_VIEWER_ROLES = ['Chairman', 'Secretary', 'Treasurer', 'SystemAdmin'];
+
+// ---------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------
+
+/**
+ * Returns the member's current savings balance and outstanding loan total.
+ */
+async function getMemberFinancials(memberId) {
+  const [{ data: balance }, { data: loans }] = await Promise.all([
+    supabaseAdmin.rpc('get_member_savings_balance', { p_member_id: memberId }),
+    supabaseAdmin.rpc('get_member_total_outstanding_loans', { p_member_id: memberId }),
+  ]);
+  return {
+    savings: Number(balance || 0),
+    outstandingLoans: Number(loans || 0),
+  };
+}
+
+/**
+ * Maximum gross amount a member may request, given their type and position.
+ * Loans are cleared first at process time; the type-specific cap then
+ * applies to whatever remains.
+ */
+function maxWithdrawable(savings, outstandingLoans, withdrawalType) {
+  const afterLiquidation = Math.max(0, savings - outstandingLoans);
+  return withdrawalType === 'RETIREMENT'
+    ? afterLiquidation * 0.5
+    : afterLiquidation;
+}
+
+const fmtNaira = (v) =>
+  `₦${Number(v || 0).toLocaleString('en-NG', { minimumFractionDigits: 0 })}`;
+
+// ---------------------------------------------------------------------
+// POST /api/withdrawals/request
+// Member submits a withdrawal request.
+// ---------------------------------------------------------------------
 router.post(
   '/request',
   asyncHandler(async (req, res) => {
     const memberId = getMemberId(req);
     const { withdrawal_type, requested_amount, reason } = req.body;
 
-    // ── Validation ─────────────────────────────────────────────
+    // ── Validation ──────────────────────────────────────────
     if (!withdrawal_type || !requested_amount) {
       return res.status(400).json({
         error: 'withdrawal_type and requested_amount are required',
@@ -21,13 +62,14 @@ router.post(
     if (!['RETIREMENT', 'TERMINATION', 'FINAL_EXIT'].includes(withdrawal_type)) {
       return res.status(400).json({ error: 'Invalid withdrawal_type' });
     }
-    if (requested_amount <= 0) {
+    const amount = Number(requested_amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({
         error: 'requested_amount must be greater than zero',
       });
     }
 
-    // ── Member lookup ─────────────────────────────────────────
+    // ── Member lookup ───────────────────────────────────────
     const { data: member, error: memberErr } = await supabaseAdmin
       .from('members')
       .select('id, status, first_name, last_name')
@@ -48,26 +90,36 @@ router.post(
       });
     }
 
-    // ── Balance check ─────────────────────────────────────────
-    const { data: balanceData } = await supabaseAdmin.rpc(
-      'get_member_savings_balance',
-      { p_member_id: memberId }
-    );
-    const available = Number(balanceData || 0);
+    // ── Financial position ──────────────────────────────────
+    const { savings, outstandingLoans } = await getMemberFinancials(memberId);
 
-    if (requested_amount > available) {
+    if (amount > savings) {
       return res.status(400).json({
-        error: `Withdrawal exceeds your available balance of ₦${available.toLocaleString()}`,
+        error: `Withdrawal exceeds your available balance of ${fmtNaira(savings)}`,
       });
     }
 
-    if (withdrawal_type === 'RETIREMENT' && requested_amount > available * 0.5) {
+    // ── Estimated type-specific cap (loans cleared first) ───
+    const cap = maxWithdrawable(savings, outstandingLoans, withdrawal_type);
+    if (amount > cap) {
+      const afterLiquidation = Math.max(0, savings - outstandingLoans);
+      const estimatedNet = cap * 0.98;
       return res.status(400).json({
-        error: 'Retirement withdrawal may not exceed 50% of your savings',
+        error:
+          `Your outstanding loans (${fmtNaira(outstandingLoans)}) will be cleared ` +
+          `from your savings first, leaving ${fmtNaira(afterLiquidation)}. ` +
+          (withdrawal_type === 'RETIREMENT'
+            ? `For a retirement withdrawal, the maximum is 50% of that remainder — `
+            : `The maximum is `) +
+          `${fmtNaira(cap)} (net ≈ ${fmtNaira(estimatedNet)} after the 2% charge). ` +
+          `Please reduce your request and resubmit.`,
+        max_allowed: cap,
+        outstanding_loans: outstandingLoans,
+        savings_after_liquidation: afterLiquidation,
       });
     }
 
-    // ── Duplicate check ───────────────────────────────────────
+    // ── Duplicate check ─────────────────────────────────────
     const { data: existing } = await supabaseAdmin
       .from('withdrawal_requests')
       .select('id, status')
@@ -82,18 +134,17 @@ router.post(
       });
     }
 
-    // ── Insert ────────────────────────────────────────────────
-    // Charge and net_amount are provisional at submission. The approval
-    // step (approve_withdrawal) recalculates them — the 2% charge applies
-    // to RETIREMENT only.
+    // ── Insert ──────────────────────────────────────────────
+    // charge_amount and net_amount are provisional at submission.
+    // The process step recalculates both after liquidation.
     const { data: inserted, error: insertErr } = await supabaseAdmin
       .from('withdrawal_requests')
       .insert({
         member_id: memberId,
         withdrawal_type,
-        requested_amount: Number(requested_amount),
+        requested_amount: amount,
         charge_amount: 0,
-        net_amount: Number(requested_amount),
+        net_amount: amount,
         reason: reason || null,
         status: 'Pending',
         created_by: memberId,
@@ -106,14 +157,14 @@ router.post(
       return res.status(400).json({ error: insertErr.message });
     }
 
-    // ── Audit ─────────────────────────────────────────────────
+    // ── Audit ───────────────────────────────────────────────
     try {
       await supabaseAdmin.rpc('write_audit', {
         p_action: 'SUBMIT_WITHDRAWAL_REQUEST',
         p_resource_type: 'withdrawal_request',
         p_resource_id: inserted.id,
         p_details: {
-          amount: Number(requested_amount),
+          amount,
           type: withdrawal_type,
           reason: reason || null,
         },
@@ -122,7 +173,7 @@ router.post(
       console.warn('[withdrawals.request] audit failed:', err.message);
     }
 
-    // ── Notify Treasurer ──────────────────────────────────────
+    // ── Notify Treasurer ────────────────────────────────────
     try {
       const { data: treasurers } = await supabaseAdmin
         .from('members')
@@ -135,7 +186,9 @@ router.post(
           p_member_id: t.id,
           p_category: 'PENDING_QUEUE',
           p_subject: 'New withdrawal request',
-          p_body: `${member.first_name} ${member.last_name} has submitted a ${withdrawal_type.toLowerCase()} withdrawal request for ₦${Number(requested_amount).toLocaleString()}.`,
+          p_body:
+            `${member.first_name} ${member.last_name} has submitted a ` +
+            `${withdrawal_type.toLowerCase()} withdrawal request for ${fmtNaira(amount)}.`,
           p_payload: { withdrawal_id: inserted.id },
         });
       }
@@ -150,88 +203,63 @@ router.post(
     });
   })
 );
-/**
- * GET /api/withdrawals/my
- * Get withdrawal requests for the current member
- */
-router.get('/my', asyncHandler(async (req, res) => {
-  const memberId = getMemberId(req);
 
-  const { data: withdrawals, error } = await supabaseAdmin
-    .from('withdrawal_requests')
-    .select('*')
-    .eq('member_id', memberId)
-    .order('created_at', { ascending: false });
+// ---------------------------------------------------------------------
+// GET /api/withdrawals/my
+// A member's own withdrawal history.
+// ---------------------------------------------------------------------
+router.get(
+  '/my',
+  asyncHandler(async (req, res) => {
+    const memberId = getMemberId(req);
 
-  if (error) {
-    return res.status(400).json({ error: error.message });
-  }
+    const { data: withdrawals, error } = await supabaseAdmin
+      .from('withdrawal_requests')
+      .select('*')
+      .eq('member_id', memberId)
+      .order('created_at', { ascending: false });
 
-  res.json({ success: true, withdrawals });
-}));
-
-/**
- * GET /api/withdrawals/pending
- * Get pending withdrawals (Treasurer/Management)
- */
-router.get('/pending', asyncHandler(async (req, res) => {
-  const role = getMemberRole(req);
-  if (!['Treasurer', 'Chairman', 'Secretary', 'SystemAdmin'].includes(role)) {
-    return res.status(403).json({ error: 'Access denied' });
-  }
-  const { data: withdrawals, error } = await supabaseAdmin
-    .from('withdrawal_requests')
-    .select('*, members!member_id(first_name, last_name, staff_id, email), withdrawal_signoffs(trustee_id, signed_at, trustee:members!trustee_id(first_name, last_name, role))')
-    .in('status', ['Pending', 'Approved'])
-    .order('created_at', { ascending: true });
-
-  if (error) {
-    return res.status(400).json({ error: error.message });
-  }
-
-  res.json({ success: true, withdrawals });
-}));
-
-/**
- * POST /api/withdrawals/approve
- * Approve a withdrawal (Trustee)
- */
-router.post('/approve', requireTrustee, asyncHandler(async (req, res) => {
-  const memberId = getMemberId(req);
-  const { request_id, trustee_1, trustee_2, recorder_id } = req.body;
-
-  if (!request_id || !trustee_1 || !trustee_2 || !recorder_id) {
-    return res.status(400).json({ 
-      error: 'request_id, trustee_1, trustee_2, and recorder_id are required' 
-    });
-  }
-
-  const result = await supabaseAdmin
-    .rpc('approve_withdrawal', {
-      p_request_id: request_id,
-      p_trustee_1: trustee_1,
-      p_trustee_2: trustee_2,
-      p_recorder_id: recorder_id
-    });
-
-    if (result.error) {
-      return res.status(400).json({ error: result.error.message });
-    }
-    if (!result.data) {
-      return res.status(400).json({ error: 'RPC returned no data' });
-    }
-    if (!result.data.success) {
-      return res.status(400).json({ error: result.data.error || 'Approval failed' });
+    if (error) {
+      return res.status(400).json({ error: error.message });
     }
 
-  res.json({ success: true, result: result.data });
-}));
+    res.json({ success: true, withdrawals: withdrawals || [] });
+  })
+);
 
-/**
- * POST /api/withdrawals/signoff
- * Records one trustee's signature on a pending withdrawal.
- * Two distinct signatures auto-approve the request.
- */
+// ---------------------------------------------------------------------
+// GET /api/withdrawals/pending
+// Treasurer / Trustee queue. Shows Pending and Approved requests.
+// Includes signature progress so trustees can see who has signed.
+// ---------------------------------------------------------------------
+router.get(
+  '/pending',
+  asyncHandler(async (req, res) => {
+    const role = getMemberRole(req);
+    if (!QUEUE_VIEWER_ROLES.includes(role)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const { data: withdrawals, error } = await supabaseAdmin
+      .from('withdrawal_requests')
+      .select(
+        '*, members!member_id(first_name, last_name, staff_id, email), withdrawal_signoffs(trustee_id, signed_at, trustee:members!trustee_id(first_name, last_name, role))'
+      )
+      .in('status', ['Pending', 'Approved', 'Processed'])
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.json({ success: true, withdrawals: withdrawals || [] });
+  })
+);
+
+// ---------------------------------------------------------------------
+// POST /api/withdrawals/signoff
+// A trustee signs a pending request. Two distinct signatures auto-approve.
+// ---------------------------------------------------------------------
 router.post(
   '/signoff',
   requireTrustee,
@@ -259,32 +287,72 @@ router.post(
   })
 );
 
+// ---------------------------------------------------------------------
+// POST /api/withdrawals/process
+// Treasurer processes an approved withdrawal.
+// Order of operations (atomic via RPC):
+//   1. Liquidate all outstanding loans from savings
+//   2. Apply the type-specific cap to the remaining balance
+//   3. Gross payout = min(requested, cap)
+//   4. Charge = 2% of gross
+//   5. Net to member = gross - charge
+// ---------------------------------------------------------------------
+router.post(
+  '/process',
+  requireTreasurer,
+  asyncHandler(async (req, res) => {
+    const memberId = getMemberId(req);
+    const { request_id } = req.body;
 
-/**
- * POST /api/withdrawals/process
- * Process an approved withdrawal (Treasurer)
- */
-router.post('/process', requireTreasurer, asyncHandler(async (req, res) => {
-  const { request_id } = req.body;
+    if (!request_id) {
+      return res.status(400).json({ error: 'request_id is required' });
+    }
 
-  if (!request_id) {
-    return res.status(400).json({ error: 'request_id is required' });
-  }
+    const result = await supabaseAdmin.rpc(
+      'process_withdrawal_with_liquidation',
+      { p_request_id: request_id, p_processed_by: memberId }
+    );
 
-  const result = await supabaseAdmin
-    .rpc('process_withdrawal', {
-      p_request_id: request_id
-    });
+    if (result.error) {
+      return res.status(400).json({ error: result.error.message });
+    }
+    if (!result.data?.success) {
+      return res.status(400).json({
+        error: result.data?.error || 'Processing failed',
+      });
+    }
 
-  if (!result.data) {
-    return res.status(400).json({ error: 'Failed to process withdrawal' });
-  }
+    // ── Notify the member ───────────────────────────────────
+    try {
+      const { data: w } = await supabaseAdmin
+        .from('withdrawal_requests')
+        .select('member_id')
+        .eq('id', request_id)
+        .single();
 
-  res.json({
-    success: true,
-    ledger_entry_id: result.data,
-    message: 'Withdrawal processed successfully'
-  });
-}));
+      if (w?.member_id) {
+        await supabaseAdmin.rpc('queue_notification', {
+          p_member_id: w.member_id,
+          p_category: 'SYSTEM',
+          p_subject: 'Withdrawal processed',
+          p_body:
+            `Your withdrawal has been processed. ` +
+            (Number(result.data.loan_repaid_total) > 0
+              ? `Loans cleared: ${fmtNaira(result.data.loan_repaid_total)}. `
+              : '') +
+            `Gross payout: ${fmtNaira(result.data.gross_payout)}. ` +
+            `Less 2% charge: ${fmtNaira(result.data.charge)}. ` +
+            `Net paid to you: ${fmtNaira(result.data.net_to_member)}. ` +
+            `Contact the Treasurer to arrange the bank transfer.`,
+          p_payload: { withdrawal_id: request_id },
+        });
+      }
+    } catch (err) {
+      console.warn('[withdrawals.process] notify failed:', err.message);
+    }
+
+    res.json({ success: true, result: result.data });
+  })
+);
 
 export default router;
