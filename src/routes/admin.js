@@ -11,6 +11,10 @@ import { getMemberId, getMemberRole } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// ─────────────────────────────────────────────────────────────────────
+// MEMBER APPLICATIONS (voting)
+// ─────────────────────────────────────────────────────────────────────
+
 /**
  * GET /api/admin/members/pending
  * Pending applications plus current vote tallies.
@@ -124,6 +128,60 @@ router.post(
 );
 
 /**
+ * POST /api/admin/members/update-status
+ * Change a member's lifecycle status (Active / Suspended / Terminated / Exited).
+ * Access: Chairman, Secretary, Treasurer, ManagementCommittee, SystemAdmin
+ *
+ * NEW: when the new status is Terminated or Exited, stamp
+ * session_invalidated_at so any open session is rejected on next refresh.
+ */
+router.post(
+  '/members/update-status',
+  requireAdmissionCommittee,
+  asyncHandler(async (req, res) => {
+    const { member_id, status, reason } = req.body;
+
+    if (!member_id || !status) {
+      return res.status(400).json({ error: 'member_id and status are required' });
+    }
+    if (!['Active', 'Suspended', 'Terminated', 'Exited'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const updates = { status, updated_at: new Date().toISOString() };
+
+    if (status === 'Terminated' || status === 'Exited') {
+      updates.termination_date = new Date().toISOString().split('T')[0];
+      updates.termination_reason = reason || null;
+      // NEW: force existing sessions to be rejected on next refresh
+      updates.session_invalidated_at = new Date().toISOString();
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('members')
+      .update(updates)
+      .eq('id', member_id)
+      .select()
+      .single();
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    await supabaseAdmin.rpc('write_audit', {
+      p_action: 'UPDATE_MEMBER_STATUS',
+      p_resource_type: 'member',
+      p_resource_id: member_id,
+      p_details: { status, reason },
+    });
+
+    res.json({ success: true, member: data });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────
+// MEMBER ADMINISTRATION (search, view, edit existing members)
+// ─────────────────────────────────────────────────────────────────────
+
+/**
  * GET /api/admin/members
  * Searchable, paginated list of existing members.
  * Access: Secretary, Treasurer, Chairman, ManagementCommittee, SystemAdmin
@@ -214,7 +272,6 @@ router.get(
       return res.status(404).json({ error: 'Member not found' });
     }
 
-    // Recent loans (up to 10)
     const { data: loans } = await supabaseAdmin
       .from('loans')
       .select(
@@ -225,7 +282,6 @@ router.get(
       .order('created_at', { ascending: false })
       .limit(10);
 
-    // Recent payments (up to 10)
     const { data: payments } = await supabaseAdmin
       .from('payment_notifications')
       .select(
@@ -235,7 +291,6 @@ router.get(
       .order('created_at', { ascending: false })
       .limit(10);
 
-    // Guarantees given by this member (up to 10)
     const { data: suretiesGiven } = await supabaseAdmin
       .from('sureties')
       .select(
@@ -247,7 +302,6 @@ router.get(
       .order('created_at', { ascending: false })
       .limit(10);
 
-    // Savings balance (RPC)
     const { data: savingsBalance } = await supabaseAdmin.rpc(
       'get_member_savings_balance',
       { p_member_id: id }
@@ -288,7 +342,6 @@ router.put(
 
     const normalized = email.trim().toLowerCase();
 
-    // Check for collisions
     const { data: existing } = await supabaseAdmin
       .from('members')
       .select('id')
@@ -323,8 +376,6 @@ router.put(
       return res.status(400).json({ error: updateError.message });
     }
 
-    // If there is an auth user, update Supabase Auth as well so the
-    // member can log in with the new email immediately.
     if (member.auth_user_id) {
       const { error: authErr } = await supabaseAdmin.auth.admin.updateUserById(
         member.auth_user_id,
@@ -332,7 +383,6 @@ router.put(
       );
       if (authErr) {
         console.warn('[admin] auth email update failed:', authErr.message);
-        // Don't roll back — the member record is the source of truth
       }
     }
 
@@ -398,55 +448,14 @@ router.put(
   })
 );
 
-
-/**
- * POST /api/admin/members/update-status
- * Change a member's lifecycle status (Active / Suspended / Terminated / Exited).
- * Access: Chairman, Secretary, Treasurer, ManagementCommittee, SystemAdmin
- */
-router.post(
-  '/members/update-status',
-  requireAdmissionCommittee,
-  asyncHandler(async (req, res) => {
-    const { member_id, status, reason } = req.body;
-
-    if (!member_id || !status) {
-      return res.status(400).json({ error: 'member_id and status are required' });
-    }
-    if (!['Active', 'Suspended', 'Terminated', 'Exited'].includes(status)) {
-      return res.status(400).json({ error: 'Invalid status' });
-    }
-
-    const updates = { status, updated_at: new Date().toISOString() };
-
-    if (status === 'Terminated' || status === 'Exited') {
-      updates.termination_date = new Date().toISOString().split('T')[0];
-      updates.termination_reason = reason || null;
-    }
-
-    const { data, error } = await supabaseAdmin
-      .from('members')
-      .update(updates)
-      .eq('id', member_id)
-      .select()
-      .single();
-
-    if (error) return res.status(400).json({ error: error.message });
-
-    await supabaseAdmin.rpc('write_audit', {
-      p_action: 'UPDATE_MEMBER_STATUS',
-      p_resource_type: 'member',
-      p_resource_id: member_id,
-      p_details: { status, reason },
-    });
-
-    res.json({ success: true, member: data });
-  })
-);
+// ─────────────────────────────────────────────────────────────────────
+// AUDIT LOG
+// ─────────────────────────────────────────────────────────────────────
 
 /**
  * GET /api/admin/audit-log
- * Full audit trail. SystemAdmin only.
+ * Full audit trail with member names resolved.
+ * Access: Chairman, Secretary, Treasurer, SystemAdmin
  */
 router.get(
   '/audit-log',
@@ -455,6 +464,7 @@ router.get(
     if (!['Chairman', 'Secretary', 'Treasurer', 'SystemAdmin'].includes(callerRole)) {
       return res.status(403).json({ error: 'Access denied' });
     }
+
     const { limit = 100, offset = 0, action, from, to } = req.query;
 
     let query = supabaseAdmin.from('audit_log').select('*', { count: 'exact' });
@@ -468,10 +478,7 @@ router.get(
 
     if (error) return res.status(400).json({ error: error.message });
 
-    // ── Enrichment: resolve member IDs to names ────────────────────
-    // Collect every UUID that appears in actor_id, resource_id (for
-    // member resources), or anywhere inside the details JSON. Look them
-    // up in one query and return a map for the frontend to join against.
+    // Enrichment: resolve member IDs to names
     const UUID_RE =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -529,6 +536,10 @@ router.get(
     });
   })
 );
+
+// ─────────────────────────────────────────────────────────────────────
+// FEES
+// ─────────────────────────────────────────────────────────────────────
 
 /**
  * POST /api/admin/fees
