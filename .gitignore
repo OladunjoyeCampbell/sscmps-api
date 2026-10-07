@@ -31,3 +31,7 @@ supabase/.temp/
 # Migration artifacts (contain real member data)
 migration-template.xlsx
 ~$*.xlsx
+data/
+live-schema.sql
+request_surety_current.sql
+*.xlsx
