@@ -91,13 +91,15 @@ router.post(
     }
     // Once-ever retirement
     if (withdrawal_type === 'RETIREMENT') {
-      const { data: prior } = await supabaseAdmin
+      const { data: priorRows } = await supabaseAdmin
         .from('withdrawal_requests')
         .select('id, status')
         .eq('member_id', memberId)
         .eq('withdrawal_type', 'RETIREMENT')
         .in('status', ['Pending', 'Approved', 'Processed'])
-        .maybeSingle();
+        .limit(1);
+
+      const prior = priorRows?.[0] || null;
 
       if (prior) {
         return res.status(400).json({
@@ -148,12 +150,14 @@ router.post(
     }
 
     // ── Duplicate check ─────────────────────────────────────
-    const { data: existing } = await supabaseAdmin
+    const { data: existingRows } = await supabaseAdmin
       .from('withdrawal_requests')
       .select('id, status')
       .eq('member_id', memberId)
       .eq('status', 'Pending')
-      .maybeSingle();
+      .limit(1);
+
+    const existing = existingRows?.[0] || null;
 
     if (existing) {
       return res.status(409).json({
