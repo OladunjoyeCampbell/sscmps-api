@@ -89,7 +89,35 @@ router.post(
         error: 'Suspended members cannot request withdrawals',
       });
     }
+    // Once-ever retirement
+    if (withdrawal_type === 'RETIREMENT') {
+      const { data: prior } = await supabaseAdmin
+        .from('withdrawal_requests')
+        .select('id, status')
+        .eq('member_id', memberId)
+        .eq('withdrawal_type', 'RETIREMENT')
+        .in('status', ['Pending', 'Approved', 'Processed'])
+        .maybeSingle();
 
+      if (prior) {
+        return res.status(400).json({
+          error:
+            'You have already taken a retirement withdrawal. A member may only ' +
+            'take the 50% retirement withdrawal once. If you wish to leave the ' +
+            'cooperative entirely, submit a Final Exit request.',
+        });
+      }
+    }
+
+    // Termination is management-initiated
+    if (withdrawal_type === 'TERMINATION') {
+      return res.status(400).json({
+        error:
+          'Termination is initiated by the management, not by the member. ' +
+          'Contact the Secretary if you have questions about your membership.',
+      });
+    }
+	
     // ── Financial position ──────────────────────────────────
     const { savings, outstandingLoans } = await getMemberFinancials(memberId);
 
