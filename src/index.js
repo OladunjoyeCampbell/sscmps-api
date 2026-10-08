@@ -46,36 +46,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.get('/api/debug/config', (req, res) => {
-  const url = process.env.SUPABASE_URL || '';
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-
-  // Extract the project ref from the URL
-  const urlRef = url.replace(/^https?:\/\//, '').split('.')[0] || null;
-
-  // Extract the project ref from the service_role key (it's a JWT)
-  let keyRef = null;
-  let keyRole = null;
-  try {
-    const payload = JSON.parse(
-      Buffer.from(serviceKey.split('.')[1], 'base64').toString('utf-8')
-    );
-    keyRef = payload.ref || null;
-    keyRole = payload.role || null;
-  } catch {
-    keyRef = 'UNPARSEABLE';
-  }
-
-  res.json({
-    supabase_url_host: url.replace(/^https?:\/\//, '').split('/')[0] || null,
-    url_project_ref: urlRef,
-    service_key_project_ref: keyRef,
-    service_key_role: keyRole,
-    service_key_length: serviceKey.length,
-    match: urlRef === keyRef,
-  });
-});
-
 app.use('/api/auth', authRoutes);
 app.use('/api/members', authenticateToken, requireAuth, memberRoutes);
 app.use('/api/payments', authenticateToken, requireAuth, paymentRoutes);
