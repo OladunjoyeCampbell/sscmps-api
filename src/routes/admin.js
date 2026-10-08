@@ -144,8 +144,13 @@ router.post(
     if (!member_id || !status) {
       return res.status(400).json({ error: 'member_id and status are required' });
     }
-    if (!['Active', 'Suspended', 'Terminated', 'Exited'].includes(status)) {
-      return res.status(400).json({ error: 'Invalid status' });
+    if (!['Active', 'Suspended'].includes(status)) {
+      return res.status(400).json({
+        error:
+          'Status can only be set to Active or Suspended here. ' +
+          'Termination and exit follow the bye-law processes: ' +
+          'record-factual-termination, expulsion via general meeting, or member-initiated Final Exit.',
+      });
     }
 
     const updates = { status, updated_at: new Date().toISOString() };
@@ -174,6 +179,151 @@ router.post(
     });
 
     res.json({ success: true, member: data });
+  })
+);
+
+/**
+ * POST /api/admin/members/:id/record-factual-termination
+ * Records a factual termination (death, insanity, employment ended).
+ * Creates a TERMINATION payout request and sets the member to Terminated.
+ */
+router.post(
+  '/members/:id/record-factual-termination',
+  requireAdmissionCommittee,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { event_type, event_date, reference } = req.body;
+    const recordedBy = getMemberId(req);
+
+    if (!event_type || !event_date || !reference) {
+      return res.status(400).json({
+        error: 'event_type, event_date, and reference are required',
+      });
+    }
+
+    const result = await supabaseAdmin.rpc('record_factual_termination', {
+      p_member_id: id,
+      p_event_type: event_type,
+      p_event_date: event_date,
+      p_reference: reference,
+      p_recorded_by: recordedBy,
+    });
+
+    if (result.error) {
+      return res.status(400).json({ error: result.error.message });
+    }
+
+    res.json({ success: true, result: result.data });
+  })
+);
+
+/**
+ * POST /api/admin/members/:id/recommend-expulsion
+ * Management Committee recommendation to expel a member under §12.
+ * Does NOT terminate — waits for the general meeting vote.
+ */
+router.post(
+  '/members/:id/recommend-expulsion',
+  requireAdmissionCommittee,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { ground, evidence } = req.body;
+    const recommendedBy = getMemberId(req);
+
+    if (!ground || !evidence) {
+      return res.status(400).json({ error: 'ground and evidence are required' });
+    }
+
+    const result = await supabaseAdmin.rpc('recommend_member_expulsion', {
+      p_member_id: id,
+      p_ground: ground,
+      p_evidence: evidence,
+      p_recommended_by: recommendedBy,
+    });
+
+    if (result.error) {
+      return res.status(400).json({ error: result.error.message });
+    }
+
+    res.json({ success: true, recommendation_id: result.data });
+  })
+);
+
+/**
+ * POST /api/admin/expulsion-recommendations/:id/record-vote
+ * Records the general meeting's decision on an expulsion recommendation.
+ * 2/3 majority for → member becomes Terminated and payout is queued.
+ */
+router.post(
+  '/expulsion-recommendations/:id/record-vote',
+  requireAdmissionCommittee,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const {
+      meeting_date,
+      votes_for,
+      votes_against,
+      votes_abstained = 0,
+      resolution_reference,
+      notes,
+    } = req.body;
+    const recordedBy = getMemberId(req);
+
+    if (
+      !meeting_date ||
+      votes_for === undefined ||
+      votes_against === undefined ||
+      !resolution_reference
+    ) {
+      return res.status(400).json({
+        error:
+          'meeting_date, votes_for, votes_against, and resolution_reference are required',
+      });
+    }
+
+    const result = await supabaseAdmin.rpc('record_expulsion_vote', {
+      p_recommendation_id: id,
+      p_meeting_date: meeting_date,
+      p_votes_for: parseInt(votes_for, 10),
+      p_votes_against: parseInt(votes_against, 10),
+      p_votes_abstained: parseInt(votes_abstained, 10) || 0,
+      p_resolution_reference: resolution_reference,
+      p_recorded_by: recordedBy,
+      p_notes: notes || null,
+    });
+
+    if (result.error) {
+      return res.status(400).json({ error: result.error.message });
+    }
+
+    res.json({ success: true, result: result.data });
+  })
+);
+
+/**
+ * GET /api/admin/members/:id/expulsion-recommendations
+ * List expulsion recommendations for a member.
+ */
+router.get(
+  '/members/:id/expulsion-recommendations',
+  requireAdmissionCommittee,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    const { data, error } = await supabaseAdmin
+      .from('member_expulsion_recommendations')
+      .select(
+        `id, member_id, ground, evidence, status, meeting_date,
+         votes_for, votes_against, votes_abstained,
+         resolution_reference, decided_at, notes, created_at,
+         recommended_by:members!recommended_by(first_name, last_name, staff_id)`
+      )
+      .eq('member_id', id)
+      .order('created_at', { ascending: false });
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ success: true, recommendations: data || [] });
   })
 );
 

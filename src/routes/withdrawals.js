@@ -166,6 +166,24 @@ router.post(
       });
     }
 
+    // Block submission if an approved loan is awaiting disbursement
+    const { data: approvedLoanRows } = await supabaseAdmin
+      .from('loans')
+      .select('id, loan_reference')
+      .eq('member_id', memberId)
+      .eq('status', 'Approved')
+      .limit(1);
+
+    const approvedLoan = approvedLoanRows?.[0] || null;
+
+    if (approvedLoan) {
+      return res.status(400).json({
+        error:
+          `You have an approved loan (${approvedLoan.loan_reference}) awaiting disbursement. ` +
+          `The loan must be disbursed or cancelled before you can submit a withdrawal.`,
+      });
+    }
+
     // ── Insert ──────────────────────────────────────────────
     // charge_amount and net_amount are provisional at submission.
     // The process step recalculates both after liquidation.
