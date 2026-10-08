@@ -208,7 +208,9 @@ router.get('/my', asyncHandler(async (req, res) => {
 
   const { data: loans, error: loansError } = await supabaseAdmin
     .from('loans')
-    .select('id, loan_reference, principal_amount, total_repayable, term_months, status, member_id')
+    .select(
+      'id, loan_reference, principal_amount, total_repayable, term_months, status, closed_reason, member_id, loan_products(name, surety_response_window_hours)'
+    )
     .in('id', loanIds);
 
   if (loansError) {
