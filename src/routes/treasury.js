@@ -41,39 +41,43 @@ router.get(
       .select('*', { count: 'exact', head: true })
       .gte('created_at', today);
 
-    // Aggregate savings from ledger (non-loan entries only)
-    // Fines are tracking-only (Committee decision, Oct 2026) — they do not
-    // reduce savings. This must match get_member_savings_balance().
-    const { data: savingsEntries } = await supabaseAdmin
-      .from('ledger_entries')
-      .select('transaction_type, amount')
-      .eq('status', 'Approved')
-      .is('loan_id', null)
-      .in('transaction_type', ['CONTRIBUTION', 'ENTRANCE_FEE', 'WITHDRAWAL']);
+    // Aggregate savings and outstanding loans — via the canonical functions
+    // used by the per-member APIs. This guarantees the dashboard totals
+    // match the sum of what each member sees on their own dashboard.
+    //
+    // Note: management_dashboard is a security-definer view that filters
+    // by app_role() — so it returns rows only to a Treasurer/Chairman/etc.
+    // When called via the service role (this route), we get one row
+    // with the aggregates. If it ever returns nothing, we compute the
+    // same sums directly.
+    let totalSavings = Number(
+      (dashboard && dashboard[0] && dashboard[0].aggregate_savings) || 0
+    );
+    let totalOutstanding = Number(
+      (dashboard && dashboard[0] && dashboard[0].aggregate_loans_outstanding) || 0
+    );
 
-    let totalSavings = 0;
-    for (const entry of savingsEntries || []) {
-      const amt = parseFloat(entry.amount);
-      if (
-        entry.transaction_type === 'CONTRIBUTION' ||
-        entry.transaction_type === 'ENTRANCE_FEE'
-      ) {
-        totalSavings += amt;
-      } else if (entry.transaction_type === 'WITHDRAWAL') {
-        totalSavings -= amt;
+    if (!dashboard || dashboard.length === 0) {
+      // Fallback: compute from the two functions directly
+      const { data: memberRows } = await supabaseAdmin
+        .from('members')
+        .select('id, status');
+
+      totalSavings = 0;
+      totalOutstanding = 0;
+
+      for (const m of memberRows || []) {
+        const { data: savings } = await supabaseAdmin.rpc(
+          'get_member_savings_balance',
+          { p_member_id: m.id }
+        );
+        const { data: loans } = await supabaseAdmin.rpc(
+          'get_member_total_outstanding_loans',
+          { p_member_id: m.id }
+        );
+        totalSavings += Number(savings || 0);
+        totalOutstanding += Number(loans || 0);
       }
-    }
-
-    // Aggregate loans outstanding
-    const { data: loans } = await supabaseAdmin
-      .from('loans')
-      .select('total_repayable, total_repaid')
-      .in('status', ['Active', 'Disbursed', 'Defaulted']);
-
-    let totalOutstanding = 0;
-    for (const loan of loans || []) {
-      totalOutstanding +=
-        parseFloat(loan.total_repayable) - parseFloat(loan.total_repaid);
     }
 
     // Delinquent loans
