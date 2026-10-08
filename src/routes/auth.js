@@ -218,7 +218,11 @@ router.post(
     }
 
     if (["Suspended", "Terminated", "Exited"].includes(member.status)) {
-      return res.status(403).json({ error: "Account is not active" });
+      return res.status(403).json({
+        error:
+          "Your account is not active. It may have been suspended or terminated. Please contact the Secretary.",
+        code: "ACCOUNT_INACTIVE",
+      });
     }
 
     // A successful login starts a new session. Any previous
