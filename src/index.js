@@ -14,6 +14,7 @@ import { processNotificationQueue } from './workers/notificationProcessor.js';
 // that pattern is in place.
 // import { startEmailWorker } from './workers/emailWorker.js';
 
+import notificationsRouter from './routes/notifications.js';
 import authRoutes from './routes/auth.js';
 import memberRoutes from './routes/members.js';
 import paymentRoutes from './routes/payments.js';
@@ -45,7 +46,7 @@ app.get('/health', (req, res) => {
     environment: config.NODE_ENV,
   });
 });
-
+app.use('/api/notifications', notificationsRouter);
 app.use('/api/auth', authRoutes);
 app.use('/api/members', authenticateToken, requireAuth, memberRoutes);
 app.use('/api/payments', authenticateToken, requireAuth, paymentRoutes);
