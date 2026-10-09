@@ -167,7 +167,7 @@ async function markFailed(notification, errorMessage) {
 }
 
 function buildEmailHtml(notification) {
-  const body = escapeHtml(notification.body);
+  const body = escapeHtml(notification.body).replace(/\n/g, '<br>');
   const year = new Date().getFullYear();
 
   return `<!doctype html>
