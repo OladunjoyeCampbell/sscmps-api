@@ -65,25 +65,7 @@ router.get(
  * POST /api/notifications/:id/read
  * Mark a single notification as read (only if it belongs to the caller).
  */
-router.post(
-  '/:id/read',
-  asyncHandler(async (req, res) => {
-    const memberId = getMemberId(req);
-    const { id } = req.params;
-
-    const { error } = await supabaseAdmin
-      .from('notification_queue')
-      .update({ read_at: new Date().toISOString() })
-      .eq('id', id)
-      .eq('recipient_member_id', memberId)
-      .is('read_at', null);
-
-    if (error) return res.status(400).json({ error: error.message });
-
-    res.json({ success: true });
-  })
-);
-
+ 
 /**
  * POST /api/notifications/read-all
  * Mark every unread notification for the caller as read.
@@ -106,3 +88,23 @@ router.post(
 );
 
 export default router;
+ 
+router.post(
+  '/:id/read',
+  asyncHandler(async (req, res) => {
+    const memberId = getMemberId(req);
+    const { id } = req.params;
+
+    const { error } = await supabaseAdmin
+      .from('notification_queue')
+      .update({ read_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('recipient_member_id', memberId)
+      .is('read_at', null);
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ success: true });
+  })
+);
+

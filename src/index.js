@@ -46,7 +46,7 @@ app.get('/health', (req, res) => {
     environment: config.NODE_ENV,
   });
 });
-app.use('/api/notifications', notificationsRouter);
+app.use('/api/notifications', authenticateToken, notificationsRouter);
 app.use('/api/auth', authRoutes);
 app.use('/api/members', authenticateToken, requireAuth, memberRoutes);
 app.use('/api/payments', authenticateToken, requireAuth, paymentRoutes);
