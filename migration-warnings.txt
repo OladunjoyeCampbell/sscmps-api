@@ -1,5 +1,5 @@
 ﻿SSCMPS migration — importer warnings at cutover
-Generated: 2026-10-16 23:25
+Generated: 2026-10-16 23:31
 
 The following loans were imported using DERIVED values (from total_repaid
 and total_repayable) rather than the workbook's stated values. The workbook
