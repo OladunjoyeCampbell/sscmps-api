@@ -4,6 +4,11 @@ generate_import_csv.py — emit CSVs + SQL driver for migration.
 Bulk tables go via COPY (one round trip). Loans stay as INSERTs
 because they need a subquery to resolve loan_product_id by name.
 
+Instalment counts are DERIVED from the money (total_repaid and
+monthly_instalment), not trusted from the workbook. The workbook's
+instalments_paid / instalments_remaining are treated as advisory;
+any disagreement > 1 is printed as a warning.
+
 Writes into ./import/:
   01_members.csv
   02_ledger.csv
@@ -119,6 +124,26 @@ def read_loans(ws):
     return out
 
 
+def derive_instalments(l, derived_monthly):
+    """
+    Return (paid_full, remainder, has_partial) from the money.
+
+    paid_full     — number of instalments fully covered by total_repaid
+    remainder     — extra money beyond paid_full * monthly (partial instalment)
+    has_partial   — True if remainder > 0.005 (rounding tolerance)
+    """
+    paid_full = int(l["total_repaid"] // derived_monthly)
+    remainder = l["total_repaid"] - (paid_full * derived_monthly)
+
+    # Guard against float artefacts: if remainder is negative (shouldn't happen with floor)
+    if remainder < 0:
+        paid_full -= 1
+        remainder = l["total_repaid"] - (paid_full * derived_monthly)
+
+    has_partial = remainder > Decimal("0.005")
+    return paid_full, remainder, has_partial
+
+
 def q(v):
     if v is None:
         return "null"
@@ -184,30 +209,49 @@ def main():
                     OPENING_NOTE,
                 ])
 
-    # ---------------------------------------------------------- Loans SQL
-    print("Writing loans SQL ...")
-    with open(os.path.join(OUTDIR, "03_loans.sql"), "w", encoding="utf-8") as f:
-        for l in loans:
-            mid = member_id[l["reg"]]
-            lid = loan_id[l["ref"]]
+    # ---------------------------------------------------------- Loans + Schedules
+    print("Writing loans SQL and schedules CSV ...")
+    loans_file = open(os.path.join(OUTDIR, "03_loans.sql"), "w", encoding="utf-8")
+    sched_file = open(os.path.join(OUTDIR, "04_schedules.csv"), "w", newline="", encoding="utf-8")
+    sched_writer = csv.writer(sched_file)
 
-            derived_monthly = (l["total_repayable"] / l["term_months"]).quantize(Decimal("0.01"))
-            if l["monthly_instalment"] > 0:
-                diff_pct = abs(l["monthly_instalment"] - derived_monthly) / derived_monthly * 100
-                if diff_pct > 1:
-                    print(f"  WARNING: {l['ref']} workbook monthly {l['monthly_instalment']} vs derived {derived_monthly}")
+    total_sched_rows = 0
+    for l in loans:
+        mid = member_id[l["reg"]]
+        lid = loan_id[l["ref"]]
 
-            normal_interest  = l["total_repayable"] - l["principal_amount"]
-            surplus_interest = Decimal("0.00")
-            total_interest   = normal_interest
-            application_fee  = Decimal("0.00")
+        # Derived monthly instalment — authoritative
+        derived_monthly = (l["total_repayable"] / l["term_months"]).quantize(Decimal("0.01"))
 
-            if l["instalments_paid"] < l["term_months"]:
-                next_due = add_months(l["disbursement_date"], l["instalments_paid"] + 1)
-            else:
-                next_due = None
+        # Derive paid/remainder from money
+        paid_full, remainder, has_partial = derive_instalments(l, derived_monthly)
 
-            f.write(f"""insert into public.loans (
+        # Warn if workbook disagrees with derived by more than 1
+        if abs(l["instalments_paid"] - paid_full) > 1:
+            print(f"  WARNING: {l['ref']} (member {l['reg']}) — workbook paid={l['instalments_paid']}, "
+                  f"derived={paid_full} (repaid={l['total_repaid']}, monthly={derived_monthly})")
+
+        # Warn if workbook's monthly disagrees with derived by more than 1%
+        if l["monthly_instalment"] > 0:
+            diff_pct = abs(l["monthly_instalment"] - derived_monthly) / derived_monthly * 100
+            if diff_pct > 1:
+                print(f"  WARNING: {l['ref']} (member {l['reg']}) — workbook monthly "
+                      f"{l['monthly_instalment']}, derived {derived_monthly} ({diff_pct:.1f}% off)")
+
+        # Interest is lumped into normal_interest_applied
+        normal_interest  = l["total_repayable"] - l["principal_amount"]
+        surplus_interest = Decimal("0.00")
+        total_interest   = normal_interest
+        application_fee  = Decimal("0.00")
+
+        # Next unpaid instalment due date
+        if paid_full + (1 if has_partial else 0) < l["term_months"]:
+            next_due = add_months(l["disbursement_date"], paid_full + (1 if has_partial else 0) + 1)
+        else:
+            next_due = None
+
+        # Write loans SQL
+        loans_file.write(f"""insert into public.loans (
   id, loan_reference, member_id,
   loan_product_id, principal_amount, member_savings_at_disbursement,
   covered_principal, surplus_principal,
@@ -223,52 +267,50 @@ def main():
   {q(l['principal_amount'])}, 0.00,
   {q(normal_interest)}, {q(surplus_interest)}, {q(total_interest)},
   {q(application_fee)}, {q(l['total_repayable'])}, {q(derived_monthly)},
-  {l['term_months']}, {q(l['total_repaid'])}, {l['instalments_paid']},
+  {l['term_months']}, {q(l['total_repaid'])}, {paid_full},
   {q(next_due)}, {q(l['status'])},
   {q(l['disbursement_date'])}, {q(l['disbursement_date'])}, {q(l['disbursement_date'])}, {q(l['disbursement_date'])}
 );
 """)
 
-    # ---------------------------------------------------------- Schedules CSV
-    print("Writing schedules CSV ...")
-    total_rows = 0
-    with open(os.path.join(OUTDIR, "04_schedules.csv"), "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        for l in loans:
-            lid = loan_id[l["ref"]]
-            derived_monthly = (l["total_repayable"] / l["term_months"]).quantize(Decimal("0.01"))
-            paid_through = l["instalments_paid"]
+        # Write schedule rows
+        for i in range(1, l["term_months"] + 1):
+            due_date = add_months(l["disbursement_date"], i)
+            if i == l["term_months"]:
+                scheduled = l["total_repayable"] - derived_monthly * (l["term_months"] - 1)
+            else:
+                scheduled = derived_monthly
 
-            for i in range(1, l["term_months"] + 1):
-                due_date = add_months(l["disbursement_date"], i)
-                if i == l["term_months"]:
-                    scheduled = l["total_repayable"] - derived_monthly * (l["term_months"] - 1)
-                else:
-                    scheduled = derived_monthly
+            if i <= paid_full:
+                amount_paid = scheduled
+                status      = "Paid"
+                paid_at     = datetime.combine(due_date, datetime.min.time())
+            elif i == paid_full + 1 and has_partial:
+                amount_paid = remainder
+                status      = "Partially Paid"
+                paid_at     = None
+            else:
+                amount_paid = Decimal("0.00")
+                status      = "Pending"
+                paid_at     = None
 
-                if i <= paid_through:
-                    amount_paid = scheduled
-                    status      = "Paid"
-                    paid_at     = datetime.combine(due_date, datetime.min.time())
-                else:
-                    amount_paid = Decimal("0.00")
-                    status      = "Pending"
-                    paid_at     = None
+            sched_writer.writerow([
+                lid, i, due_date.isoformat(),
+                csv_val(scheduled), csv_val(amount_paid),
+                status, csv_val(paid_at),
+            ])
+            total_sched_rows += 1
 
-                w.writerow([
-                    lid, i, due_date.isoformat(),
-                    csv_val(scheduled), csv_val(amount_paid),
-                    status, csv_val(paid_at),
-                ])
-                total_rows += 1
-    print(f"  Schedule rows: {total_rows}")
+    loans_file.close()
+    sched_file.close()
+    print(f"  Schedule rows: {total_sched_rows}")
 
     # ---------------------------------------------------------- SQL driver
     print("Writing SQL driver ...")
     driver = f"""-- ============================================================
 -- SSCMPS migration import driver
 -- Cutover: {CUTOVER_DATE.isoformat()}   Tracking from: {COMPLIANCE_FROM.isoformat()}
--- Members: {len(members)}   Loans: {len(loans)}   Schedule rows: {total_rows}
+-- Members: {len(members)}   Loans: {len(loans)}   Schedule rows: {total_sched_rows}
 -- ============================================================
 
 begin;
@@ -315,7 +357,7 @@ values ('SYSTEM', 'MIGRATION_IMPORT', jsonb_build_object(
   'compliance_tracking_from', '{COMPLIANCE_FROM.isoformat()}',
   'members_imported', {len(members)},
   'loans_imported', {len(loans)},
-  'schedule_rows_created', {total_rows}
+  'schedule_rows_created', {total_sched_rows}
 ));
 
 notify pgrst, 'reload schema';
