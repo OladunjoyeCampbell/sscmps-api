@@ -35,3 +35,6 @@ data/
 live-schema.sql
 request_surety_current.sql
 *.xlsx
+
+# Migration import artifacts (contain member PII)
+import/
