@@ -10,104 +10,35 @@ const router = express.Router();
 // GET /api/treasury/dashboard
 // Treasury dashboard aggregates.
 // ---------------------------------------------------------------------
+
 router.get(
   '/dashboard',
   requireTreasurer,
   asyncHandler(async (req, res) => {
-    // Management dashboard aggregates (extra panel data)
-    const { data: dashboard, error: dashError } = await supabaseAdmin
-      .from('management_dashboard')
-      .select('*');
+    // Single aggregate RPC. See migration 20261019000001.
+    // Previously looped over 74 members × 2 RPCs = 148 sequential
+    // HTTP calls, exceeding Cloudflare Workers' 30s duration limit
+    // and hanging the response indefinitely.
+    const { data: aggregates, error } = await supabaseAdmin.rpc(
+      'get_dashboard_aggregates'
+    );
 
-    if (dashError) {
-      console.error('Dashboard error:', dashError);
+    if (error) {
+      console.error('get_dashboard_aggregates error:', error);
+      return res.status(500).json({ error: 'Failed to load dashboard aggregates' });
     }
-
-    // Pending payments
-    const { count: pendingCount } = await supabaseAdmin
-      .from('pending_transactions')
-      .select('*', { count: 'exact', head: true });
-
-    // Unidentified deposits
-    const { count: unidentifiedCount } = await supabaseAdmin
-      .from('unidentified_deposits')
-      .select('*', { count: 'exact', head: true })
-      .in('status', ['Unclaimed', 'Escalated']);
-
-    // Today's transactions
-    const today = new Date().toISOString().split('T')[0];
-    const { count: todayCount } = await supabaseAdmin
-      .from('ledger_entries')
-      .select('*', { count: 'exact', head: true })
-      .gte('created_at', today);
-
-    // Aggregate savings and outstanding loans — via the canonical functions
-    // used by the per-member APIs. This guarantees the dashboard totals
-    // match the sum of what each member sees on their own dashboard.
-    //
-    // Note: management_dashboard is a security-definer view that filters
-    // by app_role() — so it returns rows only to a Treasurer/Chairman/etc.
-    // When called via the service role (this route), we get one row
-    // with the aggregates. If it ever returns nothing, we compute the
-    // same sums directly.
-    let totalSavings = Number(
-      (dashboard && dashboard[0] && dashboard[0].aggregate_savings) || 0
-    );
-    let totalOutstanding = Number(
-      (dashboard && dashboard[0] && dashboard[0].aggregate_loans_outstanding) || 0
-    );
-
-    if (!dashboard || dashboard.length === 0) {
-      // Fallback: compute from the two functions directly
-      const { data: memberRows } = await supabaseAdmin
-        .from('members')
-        .select('id, status');
-
-      totalSavings = 0;
-      totalOutstanding = 0;
-
-      for (const m of memberRows || []) {
-        const { data: savings } = await supabaseAdmin.rpc(
-          'get_member_savings_balance',
-          { p_member_id: m.id }
-        );
-        const { data: loans } = await supabaseAdmin.rpc(
-          'get_member_total_outstanding_loans',
-          { p_member_id: m.id }
-        );
-        totalSavings += Number(savings || 0);
-        totalOutstanding += Number(loans || 0);
-      }
-    }
-
-    // Delinquent loans
-    const { count: delinquentCount } = await supabaseAdmin
-      .from('loans')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'Defaulted');
-
-    // Defaulting members (missed contribution months not yet paid)
-    const { data: defaultingRows } = await supabaseAdmin
-      .from('member_contribution_defaults')
-      .select('member_id')
-      .eq('paid', false)
-      .lt('due_date', today);
-
-    const defaultingMemberIds = new Set(
-      (defaultingRows || []).map((r) => r.member_id)
-    );
 
     res.json({
       success: true,
       dashboard: {
-        aggregate_savings: totalSavings,
-        aggregate_loans_outstanding: totalOutstanding,
-        pending_payments: pendingCount || 0,
-        unidentified_deposits: unidentifiedCount || 0,
-        today_transactions: todayCount || 0,
-        delinquent_loans: delinquentCount || 0,
-        defaulting_members_count: defaultingMemberIds.size,
-        dashboard_data: dashboard || [],
+        aggregate_savings: Number(aggregates?.aggregate_savings || 0),
+        aggregate_loans_outstanding: Number(aggregates?.aggregate_loans_outstanding || 0),
+        pending_payments: Number(aggregates?.pending_payments || 0),
+        unidentified_deposits: Number(aggregates?.unidentified_deposits || 0),
+        today_transactions: Number(aggregates?.today_transactions || 0),
+        delinquent_loans: Number(aggregates?.defaulted_loans_count || 0),
+        defaulting_members_count: Number(aggregates?.defaulting_members_count || 0),
+        dashboard_data: [],
       },
     });
   })
