@@ -43,3 +43,8 @@ import/
 migration-log.txt
 migration-warnings.txt
 migration-decisions.txt
+
+# Raw import artifacts (contain member PII)
+import.sql
+schema-public.sql
+prod-before-import-*.sql
