@@ -48,3 +48,8 @@ migration-decisions.txt
 import.sql
 schema-public.sql
 prod-before-import-*.sql
+
+# Raw import artifacts (contain member PII)
+import.sql
+schema-public.sql
+prod-before-import-*.sql
