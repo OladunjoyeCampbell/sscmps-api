@@ -14,19 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
-    steps:
-      - name: Install PostgreSQL client 17
-        run: |
-          sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
-          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
-            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends postgresql-client-17
-
-      - name: Verify pg_dump version
-        run: pg_dump --version
+      # Remove: "Install PostgreSQL client 17" step (no longer needed)
+      # Remove: "Verify pg_dump version" step (no longer needed)
 
       - name: Validate connection string (fail fast if wrong pooler)
         env:
@@ -42,19 +31,32 @@ jobs:
           fi
           echo "Connection string looks correct (Session Pooler)."
 
-      - name: Dump database to custom-format archive
+      - name: Dump database via postgres:17 Docker image
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           DUMP_FILE="backup-$(date +%Y%m%d-%H%M).dump"
-          echo "Dumping to $DUMP_FILE..."
-          pg_dump "$SUPABASE_DB_URL" \
+          echo "Dumping to $DUMP_FILE using postgres:17 image..."
+          docker run --rm \
+            -v "$PWD:/backup" \
+            -w /backup \
+            --entrypoint pg_dump \
+            postgres:17 \
+            "$SUPABASE_DB_URL" \
             --format=custom \
             --compress=6 \
             --no-sync \
-            --file="$DUMP_FILE"
+            --file="/backup/$DUMP_FILE"
           echo "DUMP_FILE=$DUMP_FILE" >> $GITHUB_ENV
           ls -lh "$DUMP_FILE"
+          echo "Verifying dump integrity..."
+          docker run --rm \
+            -v "$PWD:/backup" \
+            -w /backup \
+            --entrypoint pg_restore \
+            postgres:17 \
+            --list "/backup/$DUMP_FILE" \
+            | head -n 5
 
       - name: Upload to Cloudflare R2
         env:
