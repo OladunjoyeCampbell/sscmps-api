@@ -38,3 +38,8 @@ request_surety_current.sql
 
 # Migration import artifacts (contain member PII)
 import/
+
+# Operational logs with member PII
+migration-log.txt
+migration-warnings.txt
+migration-decisions.txt
