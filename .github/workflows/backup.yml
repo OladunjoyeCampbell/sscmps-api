@@ -1,0 +1,79 @@
+name: Nightly Database Backup
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 02:00 UTC daily (03:00 Nigeria time)
+  workflow_dispatch:        # Allows manual trigger from the Actions tab
+
+# Prevent overlapping runs if a previous job hangs
+concurrency:
+  group: nightly-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Install PostgreSQL client and AWS CLI
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client
+          pip install awscli --quiet
+
+      - name: Validate connection string (fail fast if wrong pooler)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          # The connection string must be the SESSION POOLER (port 5432).
+          # The direct host (db.*.supabase.co) is IPv6-only on free tier.
+          # The transaction pooler (port 6543) cannot run pg_dump.
+          if echo "$SUPABASE_DB_URL" | grep -qE 'db\..*\.supabase\.co'; then
+            echo "ERROR: Direct connection detected. Use the Session Pooler string instead."
+            exit 1
+          fi
+          if echo "$SUPABASE_DB_URL" | grep -q ':6543'; then
+            echo "ERROR: Transaction pooler detected. Use the Session Pooler (port 5432)."
+            exit 1
+          fi
+          echo "Connection string looks correct (Session Pooler)."
+
+      - name: Dump database to custom-format archive
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          DUMP_FILE="backup-$(date +%Y%m%d-%H%M).dump"
+          echo "Dumping to $DUMP_FILE..."
+          pg_dump "$SUPABASE_DB_URL" \
+            --format=custom \
+            --compress=6 \
+            --no-sync \
+            --file="$DUMP_FILE"
+          echo "DUMP_FILE=$DUMP_FILE" >> $GITHUB_ENV
+          ls -lh "$DUMP_FILE"
+
+      - name: Upload to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+        run: |
+          aws s3 cp "$DUMP_FILE" \
+            "s3://${R2_BUCKET}/daily-backups/${DUMP_FILE}" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --no-progress
+          echo "Uploaded $DUMP_FILE to R2."
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${TG_CHAT_ID}" \
+              -d text="❌ SSCMPS nightly backup FAILED. Check GitHub Actions logs."
+          fi
