@@ -22,7 +22,7 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 BEGIN;
-
+SET check_function_bodies = false;
 -- ============================================================
 -- SECTION 1: TRIGGER HELPERS (No table dependencies)
 -- ============================================================
@@ -501,9 +501,6 @@ CREATE TABLE payment_allocations (
 CREATE INDEX idx_alloc_payment ON payment_allocations(payment_notification_id);
 CREATE INDEX idx_alloc_loan ON payment_allocations(loan_id);
 CREATE INDEX idx_alloc_member ON payment_allocations(member_id);
-ALTER TABLE payment_allocations
-  ADD CONSTRAINT fk_payment_allocations_ledger
-  FOREIGN KEY (ledger_entry_id) REFERENCES ledger_entries(id) ON DELETE RESTRICT;
 
 ALTER TABLE payment_allocations ENABLE ROW LEVEL SECURITY;
 
@@ -2287,6 +2284,17 @@ COMMENT ON FUNCTION ingest_api_credit(numeric,date,text,text,text,text,uuid,text
 COMMENT ON FUNCTION send_repayment_notifications(date) IS 'Trusted scheduler function for per-loan due and missed-payment email outbox notifications; no interest accrual is performed because SRS interest is fixed at disbursement.';
 COMMENT ON VIEW management_dashboard IS 'Management-only aggregate dashboard; security_invoker ensures underlying RLS remains effective.';
 
+-- ------------------------------------------------------------
+-- Deferred foreign keys
+-- ------------------------------------------------------------
+-- These FKs point at tables created later in this file, so they
+-- are added here, after all referenced tables exist but before
+-- the migration self-checks run.
+
+ALTER TABLE payment_allocations
+  ADD CONSTRAINT fk_payment_allocations_ledger
+  FOREIGN KEY (ledger_entry_id) REFERENCES ledger_entries(id) ON DELETE RESTRICT;
+
 -- ============================================================
 -- SECTION 38: MIGRATION SELF-CHECKS
 -- ============================================================
@@ -2327,7 +2335,6 @@ BEGIN
   END IF;
 END $$;
 
-COMMIT;
 
 -- ============================================================
 -- END SSCMPS SUPABASE MIGRATION v4D
