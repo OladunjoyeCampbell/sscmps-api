@@ -2,7 +2,7 @@ name: Nightly Database Backup
 
 on:
   schedule:
-    - cron: '0 2 * * *'   # 02:00 UTC daily
+    - cron: '0 2 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -14,9 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
-      # Remove: "Install PostgreSQL client 17" step (no longer needed)
-      # Remove: "Verify pg_dump version" step (no longer needed)
-
+    steps:
       - name: Validate connection string (fail fast if wrong pooler)
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
