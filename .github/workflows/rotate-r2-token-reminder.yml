@@ -1,0 +1,36 @@
+name: R2 Token Rotation Reminder
+
+on:
+  schedule:
+    - cron: '0 9 1 */3 *'  # 09:00 UTC on the 1st of every 3rd month
+  workflow_dispatch:
+
+jobs:
+  create-reminder:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create rotation reminder issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const dueDate = new Date();
+            dueDate.setDate(dueDate.getDate() + 90);
+            const dueDateStr = dueDate.toISOString().split('T')[0];
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🔑 Rotate Cloudflare R2 API Token (Due: ${dueDateStr})`,
+              body: `This is your 90-day reminder to rotate the R2 token used for database backups.
+              
+              **Steps:**
+              1. Create a new R2 API token in Cloudflare (Object Read & Write, scoped to the backup bucket).
+              2. Update the \`R2_ACCESS_KEY_ID\` and \`R2_SECRET_ACCESS_KEY\` secrets in GitHub.
+              3. Manually trigger the backup workflow to verify it succeeds.
+              4. Delete the old token in Cloudflare.
+              
+              Close this issue once done.`,
+              labels: ['security', 'rotation']
+            });
