@@ -2,10 +2,9 @@ name: Nightly Database Backup
 
 on:
   schedule:
-    - cron: '0 2 * * *'   # 02:00 UTC daily (03:00 Nigeria time)
-  workflow_dispatch:        # Allows manual trigger from the Actions tab
+    - cron: '0 2 * * *'   # 02:00 UTC daily
+  workflow_dispatch:
 
-# Prevent overlapping runs if a previous job hangs
 concurrency:
   group: nightly-backup
   cancel-in-progress: false
@@ -16,19 +15,23 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Install PostgreSQL client and AWS CLI
+      - name: Install PostgreSQL client 17
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y postgresql-client
-          pip install awscli --quiet
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
+
+      - name: Verify pg_dump version
+        run: pg_dump --version
 
       - name: Validate connection string (fail fast if wrong pooler)
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          # The connection string must be the SESSION POOLER (port 5432).
-          # The direct host (db.*.supabase.co) is IPv6-only on free tier.
-          # The transaction pooler (port 6543) cannot run pg_dump.
           if echo "$SUPABASE_DB_URL" | grep -qE 'db\..*\.supabase\.co'; then
             echo "ERROR: Direct connection detected. Use the Session Pooler string instead."
             exit 1
