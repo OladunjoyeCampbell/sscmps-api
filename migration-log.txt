@@ -38,3 +38,17 @@ Reference:
   Migration file: db/migrations/20261020000001_treasurer_corrections_round1.sql
   Scratch reconciliation: db/fixes/fix_lt002_schedule.sql
   All figures verified against scratch dry-run before production apply
+
+2026-10-21 — Automated off-site backup pipeline operational
+  Workflow: .github/workflows/backup.yml
+  Runs: daily at 02:00 UTC (03:00 Nigeria time)
+  Trigger: schedule (or manual via Actions tab)
+  Pipeline:
+    1. Validate connection string (must be session pooler, port 5432)
+    2. pg_dump via postgres:17 Docker image (version-matched to Supabase PG 17.6)
+    3. Integrity check via pg_restore --list
+    4. Upload to Cloudflare R2 bucket (daily-backups/ prefix)
+    5. Retain 30 days via R2 lifecycle rule
+    6. Failure alerts to Telegram
+  First successful run: 2026-10-21 08:13 UTC (backup-20261021-0813.dump)
+  Storage: Cloudflare R2 free tier (10 GB, ~0.3% used at steady state)
