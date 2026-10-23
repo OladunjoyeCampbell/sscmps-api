@@ -130,60 +130,66 @@ router.get(
   '/eligible-sureties',
   asyncHandler(async (req, res) => {
     const memberId = getMemberId(req);
+    console.log('[eligible-sureties] memberId =', memberId);
+    console.log('[eligible-sureties] req.user =', req.user);
+
+    // Hard-fail clearly instead of silently returning empty
+    if (!memberId) {
+      return res.status(401).json({
+        error: 'Not authenticated — getMemberId returned null',
+        debug: { user: req.user || null },
+      });
+    }
+
     const { exclude_loan_id } = req.query;
 
     const { data: members, error } = await supabaseAdmin
       .from('members')
-      .select('id, staff_id, first_name, last_name, email, department, position')
+      .select('id, registration_number, first_name, last_name, email, department, position')
       .eq('status', 'Active')
       .neq('id', memberId)
       .order('first_name');
 
     if (error) {
+      console.error('[eligible-sureties] members query error:', error);
       return res.status(400).json({ error: error.message });
     }
 
     let eligible = members || [];
 
-    // Exclude members already sureties on the given loan
     if (exclude_loan_id) {
       const { data: existingSureties } = await supabaseAdmin
         .from('sureties')
         .select('surety_member_id')
         .eq('loan_id', exclude_loan_id);
-
       const existingIds = (existingSureties || []).map((s) => s.surety_member_id);
       eligible = eligible.filter((m) => !existingIds.includes(m.id));
     }
 
-    // Exclude members already at their 2-guarantee limit.
-    // Statuses match accept_surety's capacity check: any non-Closed loan
-    // whose surety commitment is still live consumes capacity.
+    // Exclude members already at 2-guarantee limit
     const { data: activeLoans } = await supabaseAdmin
       .from('loans')
       .select('id')
       .in('status', ['Pending', 'Approved', 'Disbursed', 'Active', 'Defaulted']);
 
     const activeLoanIds = (activeLoans || []).map((l) => l.id);
-    const membersWithMaxGuarantees = [];
 
     if (activeLoanIds.length > 0) {
-      for (const member of eligible) {
-        const { count } = await supabaseAdmin
-          .from('sureties')
-          .select('*', { count: 'exact', head: true })
-          .eq('surety_member_id', member.id)
-          .eq('status', 'Accepted')
-          .in('loan_id', activeLoanIds);
+      const { data: activeSu] = await supabaseAdmin
+        .from('sureties')
+        .select('surety_member_id')
+        .eq('status', 'Accepted')
+        .in('loan_id', activeLoanIds);
 
-        if (count >= 2) {
-          membersWithMaxGuarantees.push(member.id);
-        }
+      const counts = {};
+      for (const s of activeSu || []) {
+        counts[s.surety_member_id] = (counts[s.surety_member_id] || 0) + 1;
       }
+
+      eligible = eligible.filter((m) => (counts[m.id] || 0) < 2);
     }
 
-    eligible = eligible.filter((m) => !membersWithMaxGuarantees.includes(m.id));
-
+    console.log('[eligible-sureties] returning', eligible.length, 'members');
     res.json({ success: true, members: eligible });
   })
 );
