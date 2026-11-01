@@ -53,3 +53,14 @@ prod-before-import-*.sql
 import.sql
 schema-public.sql
 prod-before-import-*.sql
+
+# Database backups — large, contain PII, replaceable from main DB
+*.dump
+backup-*.sql
+restore-log.txt
+
+# Local environment
+.env
+.env.local
+.env.node
+.env.production
