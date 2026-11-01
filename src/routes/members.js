@@ -175,14 +175,14 @@ router.get(
     const activeLoanIds = (activeLoans || []).map((l) => l.id);
 
     if (activeLoanIds.length > 0) {
-      const { data: activeSu] = await supabaseAdmin
+    const { data: activeSureties } = await supabaseAdmin
         .from('sureties')
         .select('surety_member_id')
         .eq('status', 'Accepted')
         .in('loan_id', activeLoanIds);
 
       const counts = {};
-      for (const s of activeSu || []) {
+      for (const s of activeSureties || []) {
         counts[s.surety_member_id] = (counts[s.surety_member_id] || 0) + 1;
       }
 
