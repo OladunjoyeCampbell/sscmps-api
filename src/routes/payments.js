@@ -36,6 +36,7 @@ router.post(
       p_evidence_url: evidence_url || null,
       p_proposed_savings: proposed_savings || 0,
       p_proposed_loans: proposed_loans || '[]',
+	  p_bank_reference: req.body.bank_reference || null,   // NEW
     });
 
     if (result.error) {
