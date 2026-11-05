@@ -27,7 +27,7 @@ const MANAGEMENT_ROLES = [
 
 async function audit(action, resourceType, resourceId, details, req) {
   try {
-    await supabaseAdmin.rpc('write_audit', {
+    await req.supabase.rpc('write_audit', {
       p_action: action,
       p_resource_type: resourceType,
       p_resource_id: resourceId,
@@ -109,7 +109,7 @@ router.get('/calculate', asyncHandler(async (req, res) => {
     });
   }
 
-  const result = await supabaseAdmin.rpc('calculate_loan_terms', {
+  const result = await req.supabase.rpc('calculate_loan_terms', {
     p_member_id: memberId,
     p_loan_product_id: product_id,
     p_principal: parseFloat(principal),
@@ -139,7 +139,7 @@ router.post('/apply', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Principal must be greater than zero' });
   }
 
-  const result = await supabaseAdmin.rpc('submit_loan_application', {
+  const result = await req.supabase.rpc('submit_loan_application', {
     p_member_id: memberId,
     p_loan_product_id: loan_product_id,
     p_principal: parseFloat(principal),
@@ -391,7 +391,7 @@ router.post('/:loanId/withdraw', asyncHandler(async (req, res) => {
   const { loanId } = req.params;
   const { reason } = req.body;
 
-  const result = await supabaseAdmin.rpc('withdraw_loan_application', {
+  const result = await req.supabase.rpc('withdraw_loan_application', {
     p_loan_id: loanId,
     p_reason: reason || null,
   });
@@ -474,7 +474,7 @@ router.get('/:loanId', asyncHandler(async (req, res) => {
       .select('*')
       .eq('loan_id', loanId)
       .order('instalment_number', { ascending: true }),
-    supabaseAdmin.rpc('get_loan_outstanding_balance', { p_loan_id: loanId }),
+    req.supabase.rpc('get_loan_outstanding_balance', { p_loan_id: loanId }),
     loan.trustee_signoff_1
       ? supabaseAdmin.from('members')
           .select('id, first_name, last_name, role')
@@ -675,7 +675,7 @@ router.post('/committee-decision', requireLoanCommitteeChairman, asyncHandler(as
     });
   }
 
-    const result = await supabaseAdmin.rpc('record_committee_decision', {
+    const result = await req.supabase.rpc('record_committee_decision', {
     p_loan_id: loan_id,
     p_recorded_by: memberId,
     p_decision: decision,
@@ -749,7 +749,7 @@ router.post('/signoff', requireTrustee, asyncHandler(async (req, res) => {
     });
   }
 
-  const result = await supabaseAdmin.rpc('record_loan_trustee_signoff', {
+  const result = await req.supabase.rpc('record_loan_trustee_signoff', {
     p_loan_id: loan_id,
     p_trustee_id: memberId,
   });
@@ -851,7 +851,7 @@ router.post('/disburse', requireTreasurer, asyncHandler(async (req, res) => {
     });
   }
 
-  const result = await supabaseAdmin.rpc('disburse_loan', {
+  const result = await req.supabase.rpc('disburse_loan', {
     p_loan_id: loan_id,
     p_recorder_id: recorder_id || memberId,
   });

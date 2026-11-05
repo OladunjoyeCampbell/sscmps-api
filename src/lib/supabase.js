@@ -69,4 +69,41 @@ export const supabaseAdmin = createClient(
   supabaseOptions
 );
 
+// ---------------------------------------------------------------------
+// User-scoped Supabase client.
+//
+// Sends the caller's JWT on the Authorization header, so PostgREST
+// resolves auth.uid() and SECURITY DEFINER RPCs see the real actor
+// instead of the service-role context. Without this, app_member_id()
+// and app_role() return NULL and write_audit() logs SYSTEM.
+//
+// extraHeaders are forwarded on every request. src/middleware/auth.js
+// passes x-sscmps-client-ip and x-sscmps-client-ua here; the DB reads
+// them from the request.headers GUC inside write_audit().
+//
+// Uses the same fetchWithRetry and ipv4first DNS as the admin/anon
+// clients so 25%-packet-loss resilience is identical.
+// ---------------------------------------------------------------------
+export const createUserClient = (accessToken, extraHeaders = {}) => {
+  if (!accessToken) {
+    throw new Error('createUserClient requires an access token');
+  }
+  if (!config.SUPABASE_ANON_KEY) {
+    // Fall back to service role would silently elevate every RPC to
+    // admin — fail loudly instead.
+    throw new Error('SUPABASE_ANON_KEY is required for user-scoped clients');
+  }
+
+  return createClient(config.SUPABASE_URL, config.SUPABASE_ANON_KEY, {
+    ...supabaseOptions,
+    global: {
+      ...supabaseOptions.global,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...extraHeaders,
+      },
+    },
+  });
+};
+
 export const supabase = supabaseAdmin;

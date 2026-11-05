@@ -29,7 +29,7 @@ router.post(
       return res.status(400).json({ error: 'Valid amount is required' });
     }
 
-    const result = await supabaseAdmin.rpc('submit_payment_notification', {
+    const result = await req.supabase.rpc('submit_payment_notification', {
       p_member_id: memberId,
       p_amount: amount,
       p_payment_reference: payment_reference || null,
@@ -209,7 +209,7 @@ router.post(
     // ---------------------------------------------------------------
     // Pre-flight checks passed — call the RPC
     // ---------------------------------------------------------------
-    const result = await supabaseAdmin.rpc('approve_payment_with_split', {
+    const result = await req.supabase.rpc('approve_payment_with_split', {
       p_payment_notification_id: payment_notification_id,
       p_savings_allocation: savings_allocation,
       p_loan_allocations: loan_allocations || '[]',
@@ -262,7 +262,7 @@ router.post(
       return res.status(400).json({ error: 'Decline reason is required' });
     }
 
-    const result = await supabaseAdmin.rpc('decline_payment', {
+    const result = await req.supabase.rpc('decline_payment', {
       p_payment_notification_id: payment_notification_id,
       p_reason: reason.trim(),
     });

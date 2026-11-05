@@ -19,7 +19,7 @@ router.get(
     // Previously looped over 74 members × 2 RPCs = 148 sequential
     // HTTP calls, exceeding Cloudflare Workers' 30s duration limit
     // and hanging the response indefinitely.
-    const { data: aggregates, error } = await supabaseAdmin.rpc(
+    const { data: aggregates, error } = await req.supabase.rpc(
       'get_dashboard_aggregates'
     );
 
@@ -161,7 +161,7 @@ router.post(
         .json({ error: 'deposit_id and member_id are required' });
     }
 
-    const result = await supabaseAdmin.rpc('resolve_unidentified_deposit', {
+    const result = await req.supabase.rpc('resolve_unidentified_deposit', {
       p_id: deposit_id,
       p_member_id: member_id,
       p_savings: savings_allocation || 0,
@@ -332,7 +332,7 @@ router.post(
 
     if (error) return res.status(400).json({ error: error.message });
 
-    await supabaseAdmin.rpc('write_audit', {
+    await req.supabase.rpc('write_audit', {
       p_action: 'MANUAL_BANK_TRANSACTION',
       p_resource_type: 'bank_transaction',
       p_resource_id: data.id,
@@ -370,7 +370,7 @@ router.post(
       });
     }
 
-    const result = await supabaseAdmin.rpc('ingest_api_credit', {
+    const result = await req.supabase.rpc('ingest_api_credit', {
       p_amount: amount,
       p_transaction_date: transaction_date,
       p_bank_reference: bank_reference,
@@ -408,7 +408,7 @@ router.post(
   '/run-compliance-check',
   requireTreasurer,
   asyncHandler(async (req, res) => {
-    const result = await supabaseAdmin.rpc('run_compliance_check');
+    const result = await req.supabase.rpc('run_compliance_check');
 
     if (result.error) {
       return res.status(400).json({ error: result.error.message });

@@ -22,7 +22,7 @@ router.post('/release', asyncHandler(async (req, res) => {
     });
   }
 
-  const result = await supabaseAdmin.rpc('release_surety', {
+  const result = await req.supabase.rpc('release_surety', {
     p_loan_id: loan_id,
     p_surety_member_id: surety_member_id,
     p_reason: reason || null,
@@ -166,7 +166,7 @@ router.post('/decline', asyncHandler(async (req, res) => {
   }
 
   // Log audit
-  await supabaseAdmin.rpc('write_audit', {
+  await req.supabase.rpc('write_audit', {
     p_action: 'DECLINE_SURETY',
     p_resource_type: 'surety',
     p_resource_id: surety_id,

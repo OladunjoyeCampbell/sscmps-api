@@ -1,5 +1,17 @@
 // src/middleware/auth.js
-import { supabaseAdmin } from '../lib/supabase.js';
+import { supabaseAdmin, createUserClient } from '../lib/supabase.js';
+
+/**
+ * Read a header whether req.headers is a plain object or a Headers
+ * instance. Cloudflare Workers and Express-on-Workers expose this
+ * inconsistently, so normalise both.
+ */
+function getHeader(req, name) {
+  const h = req.headers;
+  if (!h) return null;
+  if (typeof h.get === 'function') return h.get(name);
+  return h[name] ?? h[name.toLowerCase()] ?? null;
+}
 
 /**
  * Extract JWT token from Authorization header
@@ -121,6 +133,25 @@ export const authenticateToken = async (req, res, next) => {
       token,
       supabaseUser: { id: user.id, email: user.email },
     };
+
+    // 7. Attach a user-scoped Supabase client for downstream RPCs.
+    //    Carries the caller's JWT on the Authorization header so PostgREST
+    //    resolves auth.uid() → app_member_id() / app_role() see the real
+    //    actor, and write_audit() attributes correctly.
+    //    Client IP / UA are forwarded as custom headers so write_audit()
+    //    can read them from PostgREST's request.headers GUC.
+    //    cf-connecting-ip is set by Cloudflare and cannot be spoofed by
+    //    the end user; x-forwarded-for is the fallback for non-CF deploys.
+    const clientIp =
+      getHeader(req, 'cf-connecting-ip') ||
+      (getHeader(req, 'x-forwarded-for') || '').split(',')[0]?.trim() ||
+      '';
+    const clientUa = getHeader(req, 'user-agent') || '';
+
+    req.supabase = createUserClient(token, {
+      'x-sscmps-client-ip': clientIp,
+      'x-sscmps-client-ua': clientUa,
+    });
 
     next();
   } catch (error) {

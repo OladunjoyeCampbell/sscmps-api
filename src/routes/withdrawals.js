@@ -19,8 +19,8 @@ const QUEUE_VIEWER_ROLES = ['Chairman', 'Secretary', 'Treasurer', 'SystemAdmin']
  */
 async function getMemberFinancials(memberId) {
   const [{ data: balance }, { data: loans }] = await Promise.all([
-    supabaseAdmin.rpc('get_member_savings_balance', { p_member_id: memberId }),
-    supabaseAdmin.rpc('get_member_total_outstanding_loans', { p_member_id: memberId }),
+    req.supabase.rpc('get_member_savings_balance', { p_member_id: memberId }),
+    req.supabase.rpc('get_member_total_outstanding_loans', { p_member_id: memberId }),
   ]);
   return {
     savings: Number(balance || 0),
@@ -209,7 +209,7 @@ router.post(
 
     // ── Audit ───────────────────────────────────────────────
     try {
-      await supabaseAdmin.rpc('write_audit', {
+      await req.supabase.rpc('write_audit', {
         p_action: 'SUBMIT_WITHDRAWAL_REQUEST',
         p_resource_type: 'withdrawal_request',
         p_resource_id: inserted.id,
@@ -321,7 +321,7 @@ router.post(
       return res.status(400).json({ error: 'request_id is required' });
     }
 
-    const result = await supabaseAdmin.rpc('record_withdrawal_signoff', {
+    const result = await req.supabase.rpc('record_withdrawal_signoff', {
       p_request_id: request_id,
       p_trustee_id: memberId,
     });
@@ -358,7 +358,7 @@ router.post(
       return res.status(400).json({ error: 'request_id is required' });
     }
 
-    const result = await supabaseAdmin.rpc(
+    const result = await req.supabase.rpc(
       'process_withdrawal_with_liquidation',
       { p_request_id: request_id, p_processed_by: memberId }
     );

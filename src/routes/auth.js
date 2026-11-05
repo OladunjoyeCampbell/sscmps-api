@@ -580,7 +580,7 @@ router.post(
 
     // 3. Audit
     try {
-      await supabaseAdmin.rpc("write_audit", {
+      await req.supabase.rpc("write_audit", {
         p_action: "SIGN_OUT_EVERYWHERE",
         p_resource_type: "member",
         p_resource_id: req.user.id,
@@ -708,7 +708,7 @@ router.post(
 
     // 5. Audit
     try {
-      await supabaseAdmin.rpc("write_audit", {
+      await req.supabase.rpc("write_audit", {
         p_action: "PASSWORD_CHANGED",
         p_resource_type: "member",
         p_resource_id: member?.id || null,

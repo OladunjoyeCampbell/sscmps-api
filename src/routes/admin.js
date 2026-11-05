@@ -95,7 +95,7 @@ router.post(
       });
     }
 
-    const result = await supabaseAdmin.rpc('record_admission_vote', {
+    const result = await req.supabase.rpc('record_admission_vote', {
       p_member_id: member_id,
       p_voter_id: voterId,
       p_vote: vote,
@@ -110,7 +110,7 @@ router.post(
     }
 
     // Audit
-    await supabaseAdmin.rpc('write_audit', {
+    await req.supabase.rpc('write_audit', {
       p_action: 'ADMISSION_VOTE',
       p_resource_type: 'member',
       p_resource_id: member_id,
@@ -171,7 +171,7 @@ router.post(
 
     if (error) return res.status(400).json({ error: error.message });
 
-    await supabaseAdmin.rpc('write_audit', {
+    await req.supabase.rpc('write_audit', {
       p_action: 'UPDATE_MEMBER_STATUS',
       p_resource_type: 'member',
       p_resource_id: member_id,
@@ -201,7 +201,7 @@ router.post(
       });
     }
 
-    const result = await supabaseAdmin.rpc('record_factual_termination', {
+    const result = await req.supabase.rpc('record_factual_termination', {
       p_member_id: id,
       p_event_type: event_type,
       p_event_date: event_date,
@@ -234,7 +234,7 @@ router.post(
       return res.status(400).json({ error: 'ground and evidence are required' });
     }
 
-    const result = await supabaseAdmin.rpc('recommend_member_expulsion', {
+    const result = await req.supabase.rpc('recommend_member_expulsion', {
       p_member_id: id,
       p_ground: ground,
       p_evidence: evidence,
@@ -281,7 +281,7 @@ router.post(
       });
     }
 
-    const result = await supabaseAdmin.rpc('record_expulsion_vote', {
+    const result = await req.supabase.rpc('record_expulsion_vote', {
       p_recommendation_id: id,
       p_meeting_date: meeting_date,
       p_votes_for: parseInt(votes_for, 10),
@@ -452,12 +452,12 @@ router.get(
       .order('created_at', { ascending: false })
       .limit(10);
 
-    const { data: savingsBalance } = await supabaseAdmin.rpc(
+    const { data: savingsBalance } = await req.supabase.rpc(
       'get_member_savings_balance',
       { p_member_id: id }
     );
 
-    const { data: outstandingLoans } = await supabaseAdmin.rpc(
+    const { data: outstandingLoans } = await req.supabase.rpc(
       'get_member_total_outstanding_loans',
       { p_member_id: id }
     );
@@ -536,7 +536,7 @@ router.put(
       }
     }
 
-    await supabaseAdmin.rpc('write_audit', {
+    await req.supabase.rpc('write_audit', {
       p_action: 'ADMIN_CHANGE_EMAIL',
       p_resource_type: 'member',
       p_resource_id: id,
@@ -587,7 +587,7 @@ router.put(
 
     if (error) return res.status(400).json({ error: error.message });
 
-    await supabaseAdmin.rpc('write_audit', {
+    await req.supabase.rpc('write_audit', {
       p_action: 'ADMIN_UPDATE_MEMBER',
       p_resource_type: 'member',
       p_resource_id: id,
@@ -713,7 +713,7 @@ router.post(
       return res.status(400).json({ error: 'amount must be greater than zero' });
     }
 
-    const result = await supabaseAdmin.rpc('post_non_loan_fee', {
+    const result = await req.supabase.rpc('post_non_loan_fee', {
       p_member_id: member_id,
       p_transaction_type: transaction_type,
       p_amount: amount,

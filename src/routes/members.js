@@ -275,7 +275,7 @@ router.post(
       return res.status(400).json({ error: 'Invalid amount (minimum N10,000)' });
     }
 
-    const result = await supabaseAdmin.rpc('request_contribution_revision', {
+    const result = await req.supabase.rpc('request_contribution_revision', {
       p_member_id: memberId,
       p_new_amount: new_amount,
     });
