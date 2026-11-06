@@ -282,6 +282,46 @@ router.post(
 );
 
 /**
+ * POST /api/payments/:id/cancel
+ * Member cancels their own Pending submission before the Treasurer acts.
+ * Preserves the row (status → Cancelled) for the audit trail; member can
+ * then resubmit with a fresh reference.
+ *
+ * Concurrency: cancel_payment_notification uses SELECT ... FOR UPDATE on
+ * the payment_notifications row, and refuses unless status = 'Pending'.
+ * approve_payment_with_split uses the same row lock, so the two are
+ * serialized at the DB level. Whichever commits first wins; the other
+ * gets a clean error. No financial figures can be corrupted by a race.
+ */
+router.post(
+  '/:id/cancel',
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+
+    const result = await req.supabase.rpc('cancel_payment_notification', {
+      p_notification_id: id,
+      p_reason: reason || null,
+    });
+
+    if (result.error) {
+      console.error('[payments.cancel] RPC error:', result.error);
+      return res.status(400).json({
+        error: result.error.message || 'Cancel failed',
+        code: result.error.code || null,
+      });
+    }
+    if (!result.data?.success) {
+      return res.status(400).json({
+        error: result.data?.error || 'Cancel failed',
+      });
+    }
+
+    res.json({ success: true, result: result.data });
+  })
+);
+
+/**
  * GET /api/payments/history
  * Payment history for the current member.
  */
