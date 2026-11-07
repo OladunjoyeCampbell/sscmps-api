@@ -18,6 +18,9 @@ import notificationsRouter from './routes/notifications.js';
 import authRoutes from './routes/auth.js';
 import memberRoutes from './routes/members.js';
 import paymentRoutes from './routes/payments.js';
+import paystackPaymentRoutes, {
+  paystackWebhookHandler,
+} from './routes/payments-paystack.js';
 import loanRoutes from './routes/loans.js';
 import suretyRoutes from './routes/sureties.js';
 import treasuryRoutes from './routes/treasury.js';
@@ -36,6 +39,18 @@ app.use(helmet({
 }));
 
 app.use(cors(config.corsOptions));
+
+// ---------------------------------------------------------------------
+// Paystack webhook — MUST be registered BEFORE express.json() so the
+// raw request body remains available for HMAC-SHA512 signature
+// verification. Paystack doesn't send a JWT; this route bypasses auth.
+// ---------------------------------------------------------------------
+app.post(
+  '/api/payments/paystack/webhook',
+  express.raw({ type: 'application/json', limit: '1mb' }),
+  paystackWebhookHandler
+);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -46,9 +61,20 @@ app.get('/health', (req, res) => {
     environment: config.NODE_ENV,
   });
 });
+
 app.use('/api/notifications', authenticateToken, notificationsRouter);
 app.use('/api/auth', authRoutes);
 app.use('/api/members', authenticateToken, requireAuth, memberRoutes);
+
+// Paystack initialize / verify / status — authenticated. Mounted before
+// the generic /api/payments router so specific paths win.
+app.use(
+  '/api/payments/paystack',
+  authenticateToken,
+  requireAuth,
+  paystackPaymentRoutes
+);
+
 app.use('/api/payments', authenticateToken, requireAuth, paymentRoutes);
 app.use('/api/loans', authenticateToken, requireAuth, loanRoutes);
 app.use('/api/sureties', authenticateToken, requireAuth, suretyRoutes);
@@ -56,8 +82,6 @@ app.use('/api/treasury', authenticateToken, requireAuth, treasuryRoutes);
 app.use('/api/withdrawals', authenticateToken, requireAuth, withdrawalRoutes);
 app.use('/api/admin', authenticateToken, requireAuth, adminRoutes);
 app.use('/api/evidence', authenticateToken, requireAuth, evidenceRoutes);
-
-
 
 app.use(errorHandler);
 
